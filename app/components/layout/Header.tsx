@@ -13,7 +13,7 @@ export const Header: React.FC = () => {
   const [isSearchOpen, setIsSearchOpen] = React.useState(false);
   const [searchQuery, setSearchQuery] = React.useState("");
 
-  // console.log(user[0].username);
+  console.log(user?.role);
   const categories = [
     { label: "Semua Produk", value: "all" },
     { label: "Kemeja", value: "kemeja" },
@@ -142,22 +142,63 @@ export const Header: React.FC = () => {
 
             {isAuthenticated ? (
               <div className="relative group">
-                <button className="text-zinc-300 hover:text-white transition-colors">
-                  <User className="w-5 h-5" />
+                {/* Tombol Pemicu Dropdown */}
+                <button className="flex items-center gap-2 p-1.5 rounded-full hover:bg-zinc-800 text-zinc-300 hover:text-white transition-all focus:outline-none">
+                  <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700/60 flex items-center justify-center text-sm font-bold text-blue-400 group-hover:border-zinc-600 transition-colors">
+                    {user?.fullName ? user.fullName.charAt(0).toUpperCase() : "U"}
+                  </div>
                 </button>
-                <div className="absolute right-0 mt-2 w-48 bg-[#1a1a1a] border border-zinc-800 rounded-lg shadow-lg opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all">
-                  <Link
-                    href="/profile"
-                    className="block px-4 py-2 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors rounded-t-lg"
-                  >
-                    Profile
-                  </Link>
-                  <button
-                    onClick={handleLogout}
-                    className="w-full text-left px-4 py-2 text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors rounded-b-lg"
-                  >
-                    Logout
-                  </button>
+
+                {/* Kontainer Wrapper Dropdown dengan Invisible Buffer Area */}
+                <div className="absolute right-0 pt-2 w-56 opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 ease-out z-50 transform translate-y-1 group-hover:translate-y-0">
+                  <div className="bg-[#1a1a1a] border border-zinc-800 rounded-xl shadow-2xl overflow-hidden backdrop-blur-md">
+
+                    {/* ─── HEADER USER CARD INFO ─── */}
+                    <div className="px-4 py-3.5 bg-[#161616] border-b border-zinc-800/80 flex flex-col gap-1">
+                      <p className="text-xs text-zinc-500 font-semibold uppercase tracking-wider">Akun Login</p>
+                      <p className="text-sm font-semibold text-white truncate max-w-full">
+                        {user?.fullName || "Nama Pengguna"}
+                      </p>
+                      <div className="flex items-center mt-1">
+                        <span className={`px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider rounded-md border ${user?.role === "admin"
+                            ? "bg-red-950/40 text-red-400 border-red-900/50"
+                            : "bg-blue-950/40 text-blue-400 border-blue-900/50"
+                          }`}>
+                          {user?.role || "Customer"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* ─── MENU NAVIGATION LINKS ─── */}
+                    <div className="p-1.5 space-y-0.5">
+                      <Link
+                        href="/profile"
+                        className="flex items-center px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors rounded-lg"
+                      >
+                        Profile Saya
+                      </Link>
+
+                      {user?.role === "admin" && (
+                        <Link
+                          href="/dashboard"
+                          className="flex items-center px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-white transition-colors rounded-lg"
+                        >
+                          Panel Admin Dashboard
+                        </Link>
+                      )}
+                    </div>
+
+                    {/* ─── FOOTER ACTION BUTTON ─── */}
+                    <div className="p-1.5 border-t border-zinc-800/60 bg-[#151515]/50">
+                      <button
+                        onClick={handleLogout}
+                        className="w-full flex items-center px-3 py-2 text-xs font-bold text-red-400 hover:bg-red-950/30 hover:text-red-300 transition-colors rounded-lg"
+                      >
+                        Keluar (Logout)
+                      </button>
+                    </div>
+
+                  </div>
                 </div>
               </div>
             ) : (
