@@ -1,10 +1,11 @@
 import React from 'react'
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { User, MapPin, Package, Lock, LogOut } from 'lucide-react';
+import { User, MapPin, Package, Lock, LogOut, Wallet } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 
 export const ProfileSidebar: React.FC = () => {
+  const { user } = useAuth();
   const location = usePathname();
   const { logout } = useAuth();
 
@@ -25,6 +26,11 @@ export const ProfileSidebar: React.FC = () => {
       icon: Package,
     },
     {
+      path: '/profile/history-payment',
+      label: 'Histori Pembayaran',
+      icon: Wallet,
+    },
+    {
       path: '/profile/password',
       label: 'Ganti Password',
       icon: Lock,
@@ -38,23 +44,31 @@ export const ProfileSidebar: React.FC = () => {
   return (
     <aside className="w-full md:w-64 bg-[#121212] border border-zinc-800 rounded-lg p-4">
       <nav className="space-y-1">
-        {menuItems.map((item) => {
-          const Icon = item.icon;
-          return (
-            <Link
-              key={item.path}
-              href={item.path}
-              className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
-                isActive(item.path)
-                  ? 'bg-white text-black'
-                  : 'text-zinc-300 hover:bg-zinc-800 hover:text-white'
-              }`}
-            >
-              <Icon className="w-5 h-5" />
-              <span className="text-sm">{item.label}</span>
-            </Link>
-          );
-        })}
+        {menuItems
+          .filter((item) => {
+            // Jika role-nya admin, kecualikan path address dan orders
+            if (user?.role === "admin") {
+              return item.path !== "/profile/address" && item.path !== "/profile/orders" && item.path !== "/profile/history-payment";
+            }
+            // Jika bukan admin (customer biasa), munculkan semua menu
+            return true;
+          })
+          .map((item) => {
+            const Icon = item.icon;
+            return (
+              <Link
+                key={item.path}
+                href={item.path}
+                className={`flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${isActive(item.path)
+                    ? "bg-white text-black font-semibold"
+                    : "text-zinc-300 hover:bg-zinc-800 hover:text-white"
+                  }`}
+              >
+                <Icon className="w-5 h-5" />
+                <span className="text-sm">{item.label}</span>
+              </Link>
+            );
+          })}
 
         <button
           onClick={logout}

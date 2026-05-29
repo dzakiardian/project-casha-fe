@@ -1,147 +1,147 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Product } from '../data/products';
+"use client";
 
+import React, { createContext, useContext, useState, useEffect, ReactNode } from "react";
+import { clientFetch } from "@/lib/apiFetch";
+import { useAuth } from "./AuthContext"; // Import auth buat mastiin fetch jalan pas login
+import { toast } from "sonner";
+
+// Cocokkan struktur item dengan tabel carts database backend abang
 interface CartItem {
-  product: Product;
+  id: string;
+  productId: string;
   quantity: number;
   size: string;
   color: string;
-}
-
-interface Order {
-  id: string;
-  date: string;
-  items: CartItem[];
-  total: number;
-  status: 'pending' | 'processing' | 'shipped' | 'delivered';
-  shippingAddress: {
-    recipientName: string;
-    phone: string;
-    fullAddress: string;
-    city: string;
-    postalCode: string;
+  // Jika backend mengembalikan relasi data produk di dalamnya
+  product?: {
+    id: string;
+    name: string;
+    image: string;
+    base_price: string;
+    discount_price: string;
+    stock: number;
   };
 }
 
 interface CartContextType {
   items: CartItem[];
-  orders: Order[];
-  addToCart: (product: Product, size: string, color: string, quantity?: number) => void;
-  removeFromCart: (productId: string, size: string, color: string) => void;
-  updateQuantity: (productId: string, size: string, color: string, quantity: number) => void;
-  clearCart: () => void;
+  isLoadingCart: boolean;
+  fetchCart: () => Promise<void>;
+  addToCart: (productId: string, size: string, color: string, quantity?: number) => Promise<void>;
+  removeFromCart: (cartId: string) => Promise<void>;
+  updateQuantity: (cartId: string, quantity: number) => Promise<void>;
+  clearCart: () => Promise<void>;
   getTotalItems: () => number;
-  getTotalPrice: () => number;
-  checkout: (shippingAddress: Order['shippingAddress']) => void;
 }
 
 const CartContext = createContext<CartContextType | undefined>(undefined);
 
 export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [items, setItems] = useState<CartItem[]>([]);
-  const [orders, setOrders] = useState<Order[]>([]);
+  const [isLoadingCart, setIsLoadingCart] = useState<boolean>(false);
+  const { isAuthenticated } = useAuth();
 
-  useEffect(() => {
-    const storedCart = localStorage.getItem('cart');
-    const storedOrders = localStorage.getItem('orders');
-    if (storedCart) {
-      setItems(JSON.parse(storedCart));
-    }
-    if (storedOrders) {
-      setOrders(JSON.parse(storedOrders));
-    }
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem('cart', JSON.stringify(items));
-  }, [items]);
-
-  useEffect(() => {
-    localStorage.setItem('orders', JSON.stringify(orders));
-  }, [orders]);
-
-  const addToCart = (product: Product, size: string, color: string, quantity: number = 1) => {
-    setItems(prevItems => {
-      const existingItem = prevItems.find(
-        item => item.product.id === product.id && item.size === size && item.color === color
-      );
-
-      if (existingItem) {
-        return prevItems.map(item =>
-          item.product.id === product.id && item.size === size && item.color === color
-            ? { ...item, quantity: item.quantity + quantity }
-            : item
-        );
+  // 1. Fungsi Sinkronisasi Data live dari tabel carts MySQL backend
+  const fetchCart = async () => {
+    if (!isAuthenticated) return;
+    try {
+      setIsLoadingCart(true);
+      const res = await clientFetch("/carts");
+      if (res?.data && Array.isArray(res.data)) {
+        setItems(res.data);
       }
-
-      return [...prevItems, { product, size, color, quantity }];
-    });
+    } catch (error) {
+      console.error("Gagal sinkronisasi data keranjang database:", error);
+    } finally {
+      setIsLoadingCart(false);
+    }
   };
 
-  const removeFromCart = (productId: string, size: string, color: string) => {
-    setItems(prevItems =>
-      prevItems.filter(item => !(item.product.id === productId && item.size === size && item.color === color))
-    );
-  };
+  // Trigger fetch data setiap kali user berhasil login masuk aplikasi
+  useEffect(() => {
+    if (isAuthenticated) {
+      fetchCart();
+    } else {
+      setItems([]); // Bersihkan state jika logout
+    }
+  }, [isAuthenticated]);
 
-  const updateQuantity = (productId: string, size: string, color: string, quantity: number) => {
-    if (quantity <= 0) {
-      removeFromCart(productId, size, color);
+  // 2. Fungsi Tambah Keranjang via API
+  const addToCart = async (productId: string, size: string, color: string, qty: number = 1) => {
+    // Kunci Validasi: Cek apakah jenis produk unik sudah mentok 120 item sebelum kirim POST
+    if (items.length >= 120) {
+      toast.error("Keranjang penuh! Maksimal hanya boleh menampung 120 jenis produk.");
       return;
     }
 
-    setItems(prevItems =>
-      prevItems.map(item =>
-        item.product.id === productId && item.size === size && item.color === color
-          ? { ...item, quantity }
-          : item
-      )
-    );
+    try {
+      await clientFetch("/carts", {
+        method: "POST",
+        body: JSON.stringify({ productId, size, color, qty }),
+      });
+      
+      toast.success("Produk dimasukkan ke keranjang!");
+      await fetchCart(); // ─── KUNCI REALTIME: Tarik ulang data MySQL biar Header langsung berubah! ───
+    } catch (error) {
+      toast.error("Gagal menambahkan produk ke keranjang");
+    }
   };
 
-  const clearCart = () => {
-    setItems([]);
+  // 3. Fungsi Hapus Item Keranjang via API
+  const removeFromCart = async (cartId: string) => {
+    try {
+      await clientFetch(`/carts/${cartId}`, { method: "DELETE" });
+      toast.success("Item berhasil dihapus dari keranjang");
+      await fetchCart(); // Refresh data live
+    } catch (error) {
+      toast.error("Gagal menghapus item");
+    }
   };
 
+  // 4. Fungsi Update Qty Item via API
+  const updateQuantity = async (cartId: string, quantity: number) => {
+    if (quantity <= 0) {
+      await removeFromCart(cartId);
+      return;
+    }
+    try {
+      await clientFetch(`/carts/${cartId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ quantity }),
+      });
+      await fetchCart(); // Refresh data live
+    } catch (error) {
+      console.error("Gagal update quantity:", error);
+    }
+  };
+
+  // 5. Fungsi Clear Semua isi Keranjang via API
+  const clearCart = async () => {
+    try {
+      await clientFetch("/carts/clear", { method: "DELETE" });
+      setItems([]);
+    } catch (error) {
+      console.error("Gagal mengosongkan keranjang:", error);
+    }
+  };
+
+  // 6. Fungsi Hitung Jumlah Jenis Produk Unik untuk Badge di Header
   const getTotalItems = () => {
-    return items.reduce((total, item) => total + item.quantity, 0);
-  };
-
-  const getTotalPrice = () => {
-    return items.reduce((total, item) => {
-      const price = item.product.discount_price
-        ? parseFloat(item.product.discount_price)
-        : parseFloat(item.product.base_price);
-      return total + price * item.quantity;
-    }, 0);
-  };
-
-  const checkout = (shippingAddress: Order['shippingAddress']) => {
-    const newOrder: Order = {
-      id: Date.now().toString(),
-      date: new Date().toISOString(),
-      items: [...items],
-      total: getTotalPrice(),
-      status: 'pending',
-      shippingAddress,
-    };
-
-    setOrders(prevOrders => [newOrder, ...prevOrders]);
-    clearCart();
+    // Sesuai request abang: yang dihitung adalah baris item uniknya, bukan jumlah total qty
+    return items ? items.length : 0;
   };
 
   return (
     <CartContext.Provider
       value={{
         items,
-        orders,
+        isLoadingCart,
+        fetchCart,
         addToCart,
         removeFromCart,
         updateQuantity,
         clearCart,
         getTotalItems,
-        getTotalPrice,
-        checkout,
       }}
     >
       {children}
@@ -152,7 +152,7 @@ export const CartProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 export const useCart = () => {
   const context = useContext(CartContext);
   if (context === undefined) {
-    throw new Error('useCart must be used within a CartProvider');
+    throw new Error("useCart must be used within a CartProvider");
   }
   return context;
 };

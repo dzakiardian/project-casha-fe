@@ -18,6 +18,10 @@ export default function AddressSettings() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [address, setAddress] = useState<any[]>([]);
 
+    useEffect(() => {
+      document.title = "Mahen Store - Pengaturan Alamat";
+    }, []);
+
   const [formData, setFormData] = useState({
     label: "",
     fullName: "",

@@ -15,6 +15,8 @@ export const FeaturedProducts: React.FC = () => {
     const loadData = async () => {
       try {
         const res = await clientFetch("/products/bestseller");
+
+        // const filterData = res.data ? res.data.filter((data: { stock: number }) => data.stock > 0) : [];
         setFeaturedProducts(res.data);
       } catch (error) {
         console.error("Gagal load produk unggulan:", error);

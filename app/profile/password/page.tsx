@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ProfileSidebar } from '../../components/layout/ProfileSidebar';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
@@ -40,6 +40,10 @@ export default function ChangePassword() {
       setIsLoading(false);
     }
   };
+
+  useEffect(() => {
+      document.title = "Mahen Store - Ubah Kata";
+    }, []);
 
   return (
     <div className="container mx-auto px-4 py-8">

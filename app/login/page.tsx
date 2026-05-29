@@ -21,8 +21,8 @@ export default function Login() {
     try {
       await login(email, password);
       toast.success('Login berhasil!');
-      router.push('/');
       router.refresh();
+      document.location.href = '/';
     } catch (error) {
       toast.error('Login gagal. Silakan coba lagi.');
     } finally {

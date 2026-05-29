@@ -17,6 +17,8 @@ export default function ProductDetail() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const { isAuthenticated } = useAuth();
+  const { addToCart, getTotalItems } = useCart();
+  const liveCartCount = getTotalItems();
   
   // State Utama
   const [product, setProduct] = useState<any>(null);
@@ -96,10 +98,12 @@ export default function ProductDetail() {
     }
 
     try {
-      await clientFetch('/carts', {
-        method: 'POST',
-        body: JSON.stringify(payloadDataCart),
-      });
+      // await clientFetch('/carts', {
+      //   method: 'POST',
+      //   body: JSON.stringify(payloadDataCart),
+      // });
+      addToCart(product.id, selectedSize, selectedColor, quantity);
+      window.dispatchEvent(new Event("live-cart-update"));
 
       setSelectedColor("");
       setSelectedSize("");
@@ -311,12 +315,14 @@ export default function ProductDetail() {
             <button
               onClick={handleAddToCart}
               className="flex-1 flex items-center justify-center gap-3 bg-zinc-900 text-white h-14 rounded-xl hover:bg-zinc-800 transition-all border border-zinc-700"
+              disabled={liveCartCount >= 120}
             >
               <ShoppingCart size={20} /> Keranjang
             </button>
             <button
               onClick={handleBuyNow}
               className="flex-1 bg-white text-black font-bold h-14 rounded-xl hover:bg-zinc-200 transition-all"
+              disabled={liveCartCount >= 120}
             >
               Beli Sekarang
             </button>

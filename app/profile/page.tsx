@@ -13,6 +13,10 @@ export default function Profile() {
   const [phone, setPhone] = useState(user?.numberPhone || '');
   const [email, setEmail] = useState(user?.email || '');
 
+  useEffect(() => {
+    document.title = "Mahen Store - Profile";
+  }, []);
+
   const handleSave = () => {
     // updateProfile({ name, phone, email });
     setIsEditing(false);

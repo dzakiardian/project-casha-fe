@@ -15,7 +15,11 @@ export const RandomProducts: React.FC = () => {
       try {
         // Kita "await" alias tungguin sampai data dari backend beneran dateng
         const data = await getRandomProducts(8);
-        setProducts(data);
+        
+        const availableProducts = data ? data.filter((product) => product.stock > 0) : [];
+    
+        setProducts(availableProducts);
+
       } catch (error) {
         console.error("Gagal ambil produk acak:", error);
       } finally {

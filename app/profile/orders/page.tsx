@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { clientFetch } from '@/lib/apiFetch';
 import { BASE_IMAGE_URL } from '@/app/components/base-api';
 import { toast } from 'sonner';
+import { Button } from '@/app/components/ui/button';
 
 export default function OrderHistory() {
   const [dataOrders, setDataOrders] = useState<any[]>([]);
@@ -19,6 +20,10 @@ export default function OrderHistory() {
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [selectedOrderIdToCancel, setSelectedOrderIdToCancel] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
+
+    useEffect(() => {
+      document.title = "Mahen Store - Pesanan Saya";
+    }, []);
 
   const orderStatuses = [
     { id: "all", label: "Semua" },
@@ -118,11 +123,12 @@ export default function OrderHistory() {
       toast.error("Gagal membatalkan pesanan, silakan hubungi CS.");
     }
   };
-
   // Filter data orders berdasarkan tab marketplace yang sedang aktif
   const filteredOrders = currentTab === "all"
     ? dataOrders
     : dataOrders?.filter((order: any) => order.status === currentTab);
+
+    console.log(filteredOrders, 'a')
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -248,7 +254,7 @@ export default function OrderHistory() {
                     </div>
 
                     {/* Jika pesanan memiliki catatan pembatalan/alasan dari admin, tampilkan di bawahnya */}
-                    {order.status === 'cancelled' && order.notes && (
+                    {order.status === 'cancelled' || order.notes.split('.')[0] === 'Pembayaran Ditolak Admin' && order.status !== "waiting_verification" && order.notes && (
                       <div className="mt-4 p-3 bg-red-950/20 border border-red-900/30 rounded-lg text-xs text-zinc-400 flex items-start gap-2">
                         <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                         <span className="italic">Note Sistem: {order.notes}</span>
@@ -258,6 +264,7 @@ export default function OrderHistory() {
                 ))}
               </div>
             )}
+            <Button onClick={() => document.location.href = '/pembayaran'} className="w-full bg-slate-200/80 text-slate-900 font-semibold hover:bg-slate-400 cursor-pointer mt-5">Lihat semua pembayaranmu disini</Button>
           </div>
         </div>
       </div>

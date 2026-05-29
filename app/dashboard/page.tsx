@@ -30,6 +30,7 @@ import {
   AlertCircle,
   UserCog,
   ArrowLeft,
+  FileSpreadsheet,
 } from "lucide-react";
 import { toast } from "sonner";
 import { clientFetch } from "@/lib/apiFetch";
@@ -141,10 +142,9 @@ type TabId = "overview" | "products" | "categories" | "orders" | "payments" | "u
 
 // ─── MAIN ADMIN PANEL COMPONENT ───
 export default function AdminPage() {
-  
   const { isAuthenticated, logout, user } = useAuth();
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  
+
   const [products, setProducts] = useState<Product[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -161,10 +161,15 @@ export default function AdminPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
-  // Alasan Pembatalan states
+  // Alasan Pembatalan Pesanan states
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
   const [selectedOrderIdToCancel, setSelectedOrderIdToCancel] = useState<string | null>(null);
   const [cancelReasonInput, setCancelReasonInput] = useState("");
+
+  // Alasan Penolakan Pembayaran states
+  const [isRejectPaymentModalOpen, setIsRejectPaymentModalOpen] = useState(false);
+  const [selectedPaymentToReject, setSelectedPaymentToReject] = useState<PaymentProof | null>(null);
+  const [rejectPaymentReason, setRejectPaymentReason] = useState("");
 
   // Apriori Analytics states
   const [aprioriAnalysis, setAprioriAnalysis] = useState<AprioriAnalysis | null>(null);
@@ -194,13 +199,11 @@ export default function AdminPage() {
     { id: "analytics", label: "Analitik Apriori", icon: TrendingUp },
   ];
 
-  if(!isAuthenticated) {
-    document.location.href = '/';
-  }
-
-  if(user?.role != "admin") {
-    document.location.href = '/';
-  }
+  useEffect(() => {
+    if (!isLoading && (!isAuthenticated || user?.role !== "admin")) {
+      window.location.href = "/";
+    }
+  }, [isAuthenticated, user, isLoading]);
 
   useEffect(() => {
     fetchAll();
@@ -217,19 +220,19 @@ export default function AdminPage() {
           clientFetch("/payments/recent"),
           clientFetch("/users"),
         ]);
-        
+
       if (productsRes?.data) setProducts(productsRes.data);
       if (categoriesRes?.data) setCategories(categoriesRes.data);
       if (ordersRes?.data) setOrders(ordersRes.data);
       if (paymentsRes?.data) setPaymentProofs(paymentsRes.data);
       if (usersRes?.data) setUsers(usersRes.data);
-      
+
       // ─── LOGIC AKUMULASI DATA PENJUALAN DARI ENDPOINT ORDERS ───
       if (ordersRes?.data && Array.isArray(ordersRes.data)) {
         const orderList: Order[] = ordersRes.data;
         const now = new Date();
         const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        
+
         const thirtyDaysAgo = new Date();
         thirtyDaysAgo.setDate(now.getDate() - 30);
 
@@ -242,7 +245,7 @@ export default function AdminPage() {
 
         const monthNames = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"];
         const monthlyMap: Record<string, number> = {};
-        
+
         for (let i = 4; i >= 0; i--) {
           const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
           const label = `${monthNames[d.getMonth()]}`;
@@ -414,7 +417,7 @@ export default function AdminPage() {
         method: "PATCH",
         body: JSON.stringify({ status: "cancelled", notes: `cancelled by admin : ${cancelReasonInput}` }),
       });
-      setOrders(orders.map((o) => (o.id === selectedOrderIdToCancel ? { ...o, status: "cancelled" } : o)));
+      setOrders(orders.map((o) => (o.id === selectedOrderIdToCancel ? { ...o, status: "cancelled", notes: `cancelled by admin : ${cancelReasonInput}` } : o)));
       toast.success("Pesanan berhasil dibatalkan beserta alasannya!");
       setIsCancelModalOpen(false);
       setSelectedOrderIdToCancel(null);
@@ -440,13 +443,22 @@ export default function AdminPage() {
   // Payment handlers
   const handleVerifyPayment = async (paymentId: string) => {
     try {
-      await clientFetch(`/payments/${paymentId}/verify`, { method: "PATCH" });
+      await clientFetch(`/payments/${paymentId}/verify`, { method: "PATCH", body: JSON.stringify({ status: "approveed" }) });
+
+      const paymentItem = paymentProofs.find(p => p.paymentId === paymentId);
+      if (paymentItem?.orderDetail?.orderId) {
+        await clientFetch(`/orders/${paymentItem.orderDetail.orderId}/status`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: "processing" }),
+        });
+      }
+
       setPaymentProofs(
         paymentProofs.map((p) =>
           p.paymentId === paymentId ? { ...p, orderDetail: { ...p.orderDetail, status: "verified" } } : p
         )
       );
-      toast.success("Bukti pembayaran berhasil diverifikasi!");
+      toast.success("Bukti pembayaran disetujui, order otomatis masuk antrean diproses!");
       setIsPaymentDetailModalOpen(false);
       fetchAll();
     } catch (error) {
@@ -454,19 +466,46 @@ export default function AdminPage() {
     }
   };
 
-  const handleRejectPayment = async (paymentId: string) => {
+  const handleOpenRejectPaymentModal = (payment: PaymentProof) => {
+    setSelectedPaymentToReject(payment);
+    setIsPaymentDetailModalOpen(false);
+    setIsRejectPaymentModalOpen(true);
+  };
+
+  const handleConfirmRejectPayment = async () => {
+    if (!selectedPaymentToReject || !rejectPaymentReason.trim()) {
+      toast.error("Alasan penolakan pembayaran wajib diisi!");
+      return;
+    }
     try {
-      await clientFetch(`/payments/${paymentId}/reject`, { method: "PATCH" });
+      await clientFetch(`/payments/${selectedPaymentToReject.paymentId}/verify`, { method: "PATCH", body: JSON.stringify({ status: "rejected", notes: `Pembayaran Ditolak Admin. Alasan: ${rejectPaymentReason}` }) });
+
+      if (selectedPaymentToReject.orderDetail?.orderId) {
+        await clientFetch(`/orders/${selectedPaymentToReject.orderDetail.orderId}/status`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            status: "pending",
+            notes: `Pembayaran Ditolak Admin. Alasan: ${rejectPaymentReason}`
+          }),
+        });
+      }
+
       setPaymentProofs(
         paymentProofs.map((p) =>
-          p.paymentId === paymentId ? { ...p, orderDetail: { ...p.orderDetail, status: "rejected" } } : p
+          p.paymentId === selectedPaymentToReject.paymentId
+            ? { ...p, orderDetail: { ...p.orderDetail, status: "rejected" } }
+            : p
         )
       );
-      toast.success("Bukti pembayaran ditolak!");
+
+      toast.success("Bukti pembayaran ditolak beserta alasan tertulis!");
+      setIsRejectPaymentModalOpen(false);
       setIsPaymentDetailModalOpen(false);
+      setSelectedPaymentToReject(null);
+      setRejectPaymentReason("");
       fetchAll();
     } catch (error) {
-      toast.error("Gagal menolak pembayaran");
+      toast.error("Gagal menolak verifikasi pembayaran");
     }
   };
 
@@ -481,7 +520,7 @@ export default function AdminPage() {
     }
   };
 
-  // ─── USER MANAGEMENTS HANDLERS ───
+  // ─── USER MANAGEMENT HANDLERS ───
   const handleUpdateUserRole = async (userId: string, newRole: "user" | "admin") => {
     try {
       await clientFetch(`/users/${userId}/role`, {
@@ -564,252 +603,269 @@ export default function AdminPage() {
   const filteredPaymentProofs = paymentProofs.filter(
     (p) =>
       p.orderCode.toLowerCase().includes(searchQuery?.toLowerCase()) ||
-      p.user.name.toLowerCase().includes(searchQuery?.toLowerCase()) ||
-      p.user.email.toLowerCase().includes(searchQuery?.toLowerCase())
+      p.user?.name?.toLowerCase().includes(searchQuery?.toLowerCase()) ||
+      p.user?.email?.toLowerCase().includes(searchQuery?.toLowerCase())
   );
 
   return (
-    <div className="min-h-screen bg-[#141414] text-white flex">
-      {/* ─── SIDEBAR NAVIGATION ─── */}
-      <aside
-        className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#1a1a1a] border-r border-zinc-800 transition-transform duration-300 md:translate-x-0 md:static md:h-screen flex flex-col ${
-          isSidebarOpen ? "translate-x-0" : "-translate-x-full"
-        }`}
-      >
-        <div className="h-16 flex items-center px-6 border-b border-zinc-800 gap-2.5">
-          <Store className="w-6 h-6 text-blue-500" />
-          <div>
-            <span className="font-bold text-lg tracking-wide block text-white">Mahen Store</span>
-            <span className="text-xs text-zinc-500 font-medium block -mt-1">Admin Panel</span>
+    <>
+      <title>Mahen Store - Admin Panel</title>
+      <div className="min-h-screen bg-[#141414] text-white flex">
+        {/* ─── SIDEBAR NAVIGATION ─── */}
+        <aside
+          className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#1a1a1a] border-r border-zinc-800 transition-transform duration-300 md:translate-x-0 md:static md:h-screen flex flex-col ${isSidebarOpen ? "translate-x-0" : "-translate-x-full"
+            }`}
+        >
+          <div className="h-16 flex items-center px-6 border-b border-zinc-800 gap-2.5">
+            <Store className="w-6 h-6 text-blue-500" />
+            <div>
+              <span className="font-bold text-lg tracking-wide block text-white">Mahen Store</span>
+              <span className="text-xs text-zinc-500 font-medium block -mt-1">Admin Panel</span>
+            </div>
           </div>
-        </div>
 
-        <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
-          {menuTabs.map((tab) => {
-            const Icon = tab.icon;
-            const isActive = activeTab === tab.id;
-            return (
-              <button
-                key={tab.id}
-                onClick={() => {
-                  setActiveTab(tab.id);
-                  setSearchQuery("");
-                }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all text-sm font-medium ${
-                  isActive
+          <nav className="flex-1 px-4 py-6 space-y-1.5 overflow-y-auto">
+            {menuTabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => {
+                    setActiveTab(tab.id);
+                    setSearchQuery("");
+                  }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all text-sm font-medium ${isActive
                     ? "bg-zinc-800 text-white shadow-sm"
                     : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50"
-                }`}
-              >
-                <Icon className={`w-5 h-5 ${isActive ? "text-blue-400" : "text-zinc-400"}`} />
-                {tab.label}
-              </button>
-            );
-          })}
-          <button
-                onClick={() => {
-                  const isTrue = confirm("Anda yakin ingin keluar?\nAnda harus login untuk dapat mengakses Dashboard Admin");
-
-                  isTrue ? logout() : toast.info("Login dibatalkan");
-                }}
-                className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all text-sm font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50`}
-              >
-                <ArrowLeft className={`w-5 h-5 text-zinc-400}`} />
-                Logout
-              </button>
-        </nav>
-
-        <div className="p-4 border-t border-zinc-800 bg-[#161616]">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center font-bold text-xs text-blue-400">
-              AD
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-zinc-300">{user?.fullName}</p>
-              <p className="text-[10px] text-zinc-500">{user?.role}</p>
-            </div>
-          </div>
-        </div>
-      </aside>
-
-      {/* ─── KONTEN UTAMA ─── */}
-      <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-[#121212]">
-        <header className="h-16 bg-[#1a1a1a] border-b border-zinc-800 px-6 flex items-center justify-between sticky top-0 z-30">
-          <div className="flex items-center gap-4">
+                    }`}
+                >
+                  <Icon className={`w-5 h-5 ${isActive ? "text-blue-400" : "text-zinc-400"}`} />
+                  {tab.label}
+                </button>
+              );
+            })}
             <button
-              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-              className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-md md:hidden"
+              onClick={() => {
+                const isTrue = confirm("Anda yakin ingin keluar?\nAnda harus login untuk dapat mengakses Dashboard Admin");
+                if (isTrue) logout();
+              }}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all text-sm font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-900/50"
             >
-              <Menu className="w-6 h-6" />
+              <ArrowLeft className="w-5 h-5 text-zinc-400" />
+              Logout
             </button>
-            <h2 className="text-xl font-bold py-5 tracking-tight text-white capitalize">
-              Manajemen {activeTab === "analytics" ? "Analitik" : activeTab === "users" ? "Pengguna" : activeTab}
-            </h2>
-          </div>
-          <div className="text-xs text-zinc-500 font-mono hidden sm:block">
-            Admin Dashboard v-1.0.0
-          </div>
-        </header>
+          </nav>
 
-        <main className="p-6 md:p-8 flex-1">
-          {/* Subheader Toolbar global (Hanya untuk produk, kategori, pembayaran) */}
-          {activeTab !== "analytics" && activeTab !== "overview" && activeTab !== "orders" && activeTab !== "users" && (
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 bg-[#1a1a1a] p-4 rounded-xl border border-zinc-800">
-              <div className="relative flex-1 max-w-md">
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder={`Cari data ${activeTab === "products" ? "produk" : "kategori"}...`}
-                  className="w-full bg-[#121212] border border-zinc-800 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
-                />
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+          <div className="p-4 border-t border-zinc-800 bg-[#161616]">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center font-bold text-xs text-blue-400">
+                AD
               </div>
-
-              <button
-                onClick={() => {
-                  if (activeTab === "products") {
-                    setEditingProduct(null);
-                    setIsProductModalOpen(true);
-                  } else if (activeTab === "categories") {
-                    setEditingCategory(null);
-                    setIsCategoryModalOpen(true);
-                  }
-                }}
-                className="bg-white text-black px-4 py-2.5 rounded-lg hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 text-sm font-semibold whitespace-nowrap"
-              >
-                <Plus className="w-4 h-4" />
-                Tambah {activeTab === "products" ? "Produk" : "Kategori"}
-              </button>
+              <div>
+                <p className="text-xs font-semibold text-zinc-300">{user?.fullName}</p>
+                <p className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">{user?.role}</p>
+              </div>
             </div>
-          )}
-
-          {/* Wrapper Konten Dinamis */}
-          <div className="bg-[#1a1a1a] border border-zinc-800 rounded-xl overflow-hidden shadow-xl">
-            {isLoading ? (
-              <div className="text-center py-24 text-zinc-500 flex flex-col items-center justify-center gap-3">
-                <div className="w-8 h-8 border-2 border-zinc-600 border-t-white rounded-full animate-spin"></div>
-                <span className="text-sm font-medium">Sinkronisasi Basis Data...</span>
-              </div>
-            ) : (
-              <>
-                {activeTab === "overview" && (
-                  <OverviewDashboard sales={salesOverview} users={users} />
-                )}
-                {activeTab === "products" && (
-                  <ProductsTable
-                    products={filteredProducts}
-                    categories={categories}
-                    onEdit={(p) => {
-                      setEditingProduct(p);
-                      setIsProductModalOpen(true);
-                    }}
-                    onDelete={handleDeleteProduct}
-                  />
-                )}
-                {activeTab === "categories" && (
-                  <CategoriesTable
-                    categories={filteredCategories}
-                    onEdit={(c) => {
-                      setEditingCategory(c);
-                      setIsCategoryModalOpen(true);
-                    }}
-                    onDelete={handleDeleteCategory}
-                  />
-                )}
-                {activeTab === "orders" && (
-                  <OrdersTabsContainer
-                    orders={orders}
-                    onUpdateStatus={handleUpdateOrderStatus}
-                    onDelete={handleDeleteOrder}
-                    setSelectedOrderIdToCancel={setSelectedOrderIdToCancel}
-                    setIsCancelModalOpen={setIsCancelModalOpen}
-                  />
-                )}
-                {activeTab === "payments" && (
-                  <PaymentProofTable
-                    paymentProofs={filteredPaymentProofs}
-                    onView={(p) => {
-                      setSelectedPayment(p);
-                      setIsPaymentDetailModalOpen(true);
-                    }}
-                    onDelete={handleDeletePayment}
-                  />
-                )}
-                {activeTab === "users" && (
-                  <ManageUsersPanel
-                    users={users}
-                    onUpdateRole={handleUpdateUserRole}
-                    onDeleteUser={handleDeleteUser}
-                  />
-                )}
-                {activeTab === "analytics" && (
-                  <AprioriAnalytics
-                    params={aprioriParams}
-                    setParams={setAprioriParams}
-                    analysis={aprioriAnalysis}
-                    isLoading={isLoadingAnalysis}
-                    isSyncing={isSyncingRecommendation}
-                    onRunAnalysis={handleRunAprioriAnalysis}
-                    onSyncRecommendation={handleSyncRecommendation}
-                  />
-                )}
-              </>
-            )}
           </div>
-        </main>
+        </aside>
+
+        {/* ─── KONTEN UTAMA ─── */}
+        <div className="flex-1 flex flex-col min-w-0 h-screen overflow-y-auto bg-[#121212]">
+          <header className="h-16 bg-[#1a1a1a] border-b border-zinc-800 px-6 flex items-center justify-between sticky top-0 z-30">
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+                className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-md md:hidden"
+              >
+                <Menu className="w-6 h-6" />
+              </button>
+              <h2 className="text-xl font-bold py-5 tracking-tight text-white capitalize">
+                Manajemen {activeTab === "analytics" ? "Analitik" : activeTab === "users" ? "Pengguna" : activeTab}
+              </h2>
+            </div>
+            <div className="text-xs text-zinc-500 font-mono hidden sm:block">
+              Admin Dashboard v-1.0.0
+            </div>
+          </header>
+
+          <main className="p-6 md:p-8 flex-1">
+            {/* Subheader Toolbar global (Hanya muncul jika activeTab adalah produk, kategori, atau bukti pembayaran) */}
+            {(activeTab === "products" || activeTab === "categories" || activeTab === "payments") && (
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6 bg-[#1a1a1a] p-4 rounded-xl border border-zinc-800">
+                <div className="relative flex-1 max-w-md">
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder={`Cari data ${activeTab === "products" ? "produk" : activeTab === "categories" ? "kategori" : "bukti pembayaran"
+                      }...`}
+                    className="w-full bg-[#121212] border border-zinc-800 rounded-lg pl-10 pr-4 py-2.5 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:border-zinc-700"
+                  />
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                </div>
+
+                {(activeTab === "products" || activeTab === "categories") && (
+                  <button
+                    onClick={() => {
+                      if (activeTab === "products") {
+                        setEditingProduct(null);
+                        setIsProductModalOpen(true);
+                      } else if (activeTab === "categories") {
+                        setEditingCategory(null);
+                        setIsCategoryModalOpen(true);
+                      }
+                    }}
+                    className="bg-white text-black px-4 py-2.5 rounded-lg hover:bg-zinc-200 transition-colors flex items-center justify-center gap-2 text-sm font-semibold whitespace-nowrap"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Tambah {activeTab === "products" ? "Produk" : "Kategori"}
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Wrapper Konten Dinamis */}
+            <div className="bg-[#1a1a1a] border border-zinc-800 rounded-xl overflow-hidden shadow-xl">
+              {isLoading ? (
+                <div className="text-center py-24 text-zinc-500 flex flex-col items-center justify-center gap-3">
+                  <div className="w-8 h-8 border-2 border-zinc-600 border-t-white rounded-full animate-spin"></div>
+                  <span className="text-sm font-medium">Sinkronisasi Basis Data...</span>
+                </div>
+              ) : (
+                <>
+                  {activeTab === "overview" && (
+                    <OverviewDashboard sales={salesOverview} users={users} orders={orders} />
+                  )}
+                  {activeTab === "products" && (
+                    <ProductsTable
+                      products={filteredProducts}
+                      categories={categories}
+                      onEdit={(p) => {
+                        setEditingProduct(p);
+                        setIsProductModalOpen(true);
+                      }}
+                      onDelete={handleDeleteProduct}
+                    />
+                  )}
+                  {activeTab === "categories" && (
+                    <CategoriesTable
+                      categories={filteredCategories}
+                      onEdit={(c) => {
+                        setEditingCategory(c);
+                        setIsCategoryModalOpen(true);
+                      }}
+                      onDelete={handleDeleteCategory}
+                    />
+                  )}
+                  {activeTab === "orders" && (
+                    <OrdersTabsContainer
+                      orders={orders}
+                      onUpdateStatus={handleUpdateOrderStatus}
+                      onDelete={handleDeleteOrder}
+                      setSelectedOrderIdToCancel={setSelectedOrderIdToCancel}
+                      setIsCancelModalOpen={setIsCancelModalOpen}
+                    />
+                  )}
+                  {activeTab === "payments" && (
+                    <PaymentProofTable
+                      paymentProofs={filteredPaymentProofs}
+                      onView={(p) => {
+                        setSelectedPayment(p);
+                        setIsPaymentDetailModalOpen(true);
+                      }}
+                      onDelete={handleDeletePayment}
+                    />
+                  )}
+                  {activeTab === "users" && (
+                    <ManageUsersPanel
+                      users={users}
+                      onUpdateRole={handleUpdateUserRole}
+                      onDeleteUser={handleDeleteUser}
+                    />
+                  )}
+                  {activeTab === "analytics" && (
+                    <AprioriAnalytics
+                      params={aprioriParams}
+                      setParams={setAprioriParams}
+                      analysis={aprioriAnalysis}
+                      isLoading={isLoadingAnalysis}
+                      isSyncing={isSyncingRecommendation}
+                      onRunAnalysis={handleRunAprioriAnalysis}
+                      onSyncRecommendation={handleSyncRecommendation}
+                    />
+                  )}
+                </>
+              )}
+            </div>
+          </main>
+        </div>
+
+        {/* ─── MODALS AREA ─── */}
+        {isCancelModalOpen && (
+          <CancelOrderModal
+            isOpen={isCancelModalOpen}
+            onClose={() => {
+              setIsCancelModalOpen(false);
+              setSelectedOrderIdToCancel(null);
+              setCancelReasonInput("");
+            }}
+            reason={cancelReasonInput}
+            setReason={setCancelReasonInput}
+            onConfirm={handleConfirmCancelOrder}
+          />
+        )}
+
+        {isRejectPaymentModalOpen && selectedPaymentToReject && (
+          <RejectPaymentModal
+            isOpen={isRejectPaymentModalOpen}
+            onClose={() => {
+              setIsRejectPaymentModalOpen(false);
+              setSelectedPaymentToReject(null);
+              setRejectPaymentReason("");
+            }}
+            reason={rejectPaymentReason}
+            setReason={setRejectPaymentReason}
+            onConfirm={handleConfirmRejectPayment}
+          />
+        )}
+
+        {isPaymentDetailModalOpen && selectedPayment && (
+          <PaymentDetailModal
+            payment={selectedPayment}
+            onClose={() => {
+              setIsPaymentDetailModalOpen(false);
+              setSelectedPayment(null);
+            }}
+            onVerify={handleVerifyPayment}
+            onReject={handleOpenRejectPaymentModal}
+          />
+        )}
+
+        {isProductModalOpen && (
+          <ProductModal
+            product={editingProduct}
+            categories={categories}
+            onClose={() => {
+              setIsProductModalOpen(false);
+              setEditingProduct(null);
+            }}
+            onSave={handleSaveProduct}
+          />
+        )}
+
+        {isCategoryModalOpen && (
+          <CategoryModal
+            category={editingCategory}
+            onClose={() => {
+              setIsCategoryModalOpen(false);
+              setEditingCategory(null);
+            }}
+            onSave={handleSaveCategory}
+          />
+        )}
       </div>
-
-      {/* ─── MODALS AREA ─── */}
-      {isCancelModalOpen && (
-        <CancelOrderModal
-          isOpen={isCancelModalOpen}
-          onClose={() => {
-            setIsCancelModalOpen(false);
-            setSelectedOrderIdToCancel(null);
-            setCancelReasonInput("");
-          }}
-          reason={cancelReasonInput}
-          setReason={setCancelReasonInput}
-          onConfirm={handleConfirmCancelOrder}
-        />
-      )}
-
-      {isPaymentDetailModalOpen && selectedPayment && (
-        <PaymentDetailModal
-          payment={selectedPayment}
-          onClose={() => {
-            setIsPaymentDetailModalOpen(false);
-            setSelectedPayment(null);
-          }}
-          onVerify={handleVerifyPayment}
-          onReject={handleRejectPayment}
-        />
-      )}
-
-      {isProductModalOpen && (
-        <ProductModal
-          product={editingProduct}
-          categories={categories}
-          onClose={() => {
-            setIsProductModalOpen(false);
-            setEditingProduct(null);
-          }}
-          onSave={handleSaveProduct}
-        />
-      )}
-
-      {isCategoryModalOpen && (
-        <CategoryModal
-          category={editingCategory}
-          onClose={() => {
-            setIsCategoryModalOpen(false);
-            setEditingCategory(null);
-          }}
-          onSave={handleSaveCategory}
-        />
-      )}
-    </div>
+    </>
   );
 }
 
@@ -818,9 +874,11 @@ export default function AdminPage() {
 const OverviewDashboard: React.FC<{
   sales: SalesOverview;
   users: UserData[];
-}> = ({ sales, users }) => {
+  orders: Order[];
+}> = ({ sales, users, orders }) => {
   const [userSearch, setUserSearch] = useState("");
-  
+  const [exportTimeline, setExportTimeline] = useState<"7" | "30" | "365">("30");
+
   const totalUsers = users.length;
   const totalAdmin = users.filter((u) => u.role === "admin").length;
   const totalRegularUser = users.filter((u) => u.role === "user").length;
@@ -834,13 +892,83 @@ const OverviewDashboard: React.FC<{
       u.email?.toLowerCase().includes(userSearch.toLowerCase())
   );
 
+  const handleExportSalesToExcel = () => {
+    const daysToCount = parseInt(exportTimeline);
+    const now = new Date();
+    const borderDate = new Date();
+    borderDate.setDate(now.getDate() - daysToCount);
+
+    const validOrders = orders.filter((order) => {
+      const orderDate = new Date(order.createdAt);
+      return (
+        order.status !== "pending" &&
+        order.status !== "cancelled" &&
+        orderDate >= borderDate
+      );
+    });
+
+    if (validOrders.length === 0) {
+      toast.info("Tidak ada rekaman transaksi penjualan sukses dalam rentang waktu terpilih");
+      return;
+    }
+
+    let csvContent = "data:text/csv;charset=utf-8,";
+    csvContent += "ID Transaksi,Kode Order,Nama Produk,Varian Ukuran,Varian Warna,Total Pembayaran,Ongkos Kirim,Tanggal Transaksi\n";
+
+    validOrders.forEach((item) => {
+      const formattedDate = new Date(item.createdAt).toLocaleDateString("id-ID");
+      const row = [
+        item.id,
+        item.orderCode,
+        `"${item.product?.name || "-"}"`,
+        item.size || "-",
+        item.color || "-",
+        item.totalAmount,
+        item.shippingCost,
+        formattedDate
+      ].join(",");
+      csvContent += row + "\n";
+    });
+
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `Laporan_Penjualan_MahenStore_${exportTimeline}_Hari_Terakhir.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    toast.success("Berkas spreadsheet laporan penjualan berhasil diunduh!");
+  };
+
   return (
     <div className="p-6 space-y-8">
-      {/* Sales Matrix Cards */}
-      <div>
-        <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-wider mb-4">
-          Ringkasan Finansial Penjualan
-        </h3>
+      {/* Sales Matrix Cards & Export Actions Row */}
+      <div className="space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <h3 className="text-sm font-bold text-zinc-400 uppercase tracking-wider">
+            Ringkasan Finansial Penjualan
+          </h3>
+
+          <div className="flex items-center gap-2 bg-[#121212] p-2 rounded-xl border border-zinc-800 shrink-0">
+            <select
+              value={exportTimeline}
+              onChange={(e) => setExportTimeline(e.target.value as any)}
+              className="bg-[#161616] text-zinc-300 text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-zinc-800 focus:outline-none"
+            >
+              <option value="7">7 Hari Terakhir (Mingguan)</option>
+              <option value="30">30 Hari Terakhir (Bulanan)</option>
+              <option value="365">365 Hari Terakhir (Tahunan)</option>
+            </select>
+            <button
+              onClick={handleExportSalesToExcel}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg transition-colors"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              Ekspor Excel
+            </button>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
           <div className="bg-[#121212] rounded-xl p-5 border border-zinc-800 flex items-center justify-between">
             <div>
@@ -997,9 +1125,8 @@ const OverviewDashboard: React.FC<{
                     <td className="px-6 py-4 text-sm font-medium text-white">{user.fullName}</td>
                     <td className="px-6 py-4 text-sm text-zinc-400 break-all">{user.email}</td>
                     <td className="px-6 py-4 text-sm">
-                      <span className={`px-2.5 py-0.5 rounded text-xs font-semibold uppercase tracking-wider ${
-                        user.role === "admin" ? "bg-red-950/60 text-red-400 border border-red-900/50" : "bg-blue-950/60 text-blue-400 border border-blue-900/50"
-                      }`}>{user.role}</span>
+                      <span className={`px-2.5 py-0.5 rounded text-xs font-semibold uppercase tracking-wider ${user.role === "admin" ? "bg-red-950/60 text-red-400 border border-red-900/50" : "bg-blue-950/60 text-blue-400 border border-blue-900/50"
+                        }`}>{user.role}</span>
                     </td>
                     <td className="px-6 py-4 text-xs text-zinc-500 font-medium">
                       {new Date(user.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })}
@@ -1025,7 +1152,7 @@ const ProductsTable: React.FC<{
     <table className="w-full">
       <thead className="bg-[#1e1e1e] border-b border-zinc-800">
         <tr>
-          {["Gambar", "Nama", "Kode", "Kategori", "Harga", "Stok", "Aksi"].map(
+          {["Gambar", "Nama", "Kode SKU", "Kategori", "Harga", "Stok", "Aksi"].map(
             (h) => (
               <th key={h} className="text-left px-6 py-4 text-zinc-400 font-semibold text-xs uppercase tracking-wider">{h}</th>
             )
@@ -1051,7 +1178,7 @@ const ProductsTable: React.FC<{
                 />
               </td>
               <td className="px-6 py-4 text-sm font-medium text-white">{product.name}</td>
-              <td className="px-6 py-4 text-zinc-400 font-mono text-xs">{product.code}</td>
+              <td className="px-6 py-4 text-zinc-400 font-mono text-xs font-bold tracking-wider">{product.code}</td>
               <td className="px-6 py-4 text-sm text-zinc-400">{product.category?.name || "-"}</td>
               <td className="px-6 py-4 text-sm">
                 <div className="text-white font-medium">Rp {parseFloat(product.discount_price).toLocaleString("id-ID")}</div>
@@ -1060,9 +1187,8 @@ const ProductsTable: React.FC<{
                 )}
               </td>
               <td className="px-6 py-4 text-sm">
-                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
-                  product.stock > 10 ? "bg-green-950/50 text-green-400 border border-green-900" : product.stock > 0 ? "bg-yellow-950/50 text-yellow-400 border border-yellow-900" : "bg-red-950/50 text-red-400 border border-red-900"
-                }`}>{product.stock} pcs</span>
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${product.stock > 10 ? "bg-green-950/50 text-green-400 border border-green-900" : product.stock > 0 ? "bg-yellow-950/50 text-yellow-400 border border-yellow-900" : "bg-red-950/50 text-red-400 border border-red-900"
+                  }`}>{product.stock} pcs</span>
               </td>
               <td className="px-6 py-4">
                 <div className="flex items-center gap-1">
@@ -1153,7 +1279,6 @@ const OrdersTabsContainer: React.FC<{
     { id: "waiting_verification", label: "Menunggu Verifikasi" },
     { id: "processing", label: "Diproses" },
     { id: "shipped", label: "Dikirim" },
-    { id: "delivered", label: "Sampai Tujuan" },
     { id: "success", label: "Selesai (Success)" },
     { id: "cancelled", label: "Dibatalkan" },
   ];
@@ -1204,9 +1329,8 @@ const OrdersTabsContainer: React.FC<{
             <button
               key={tab.id}
               onClick={() => setCurrentOrderTab(tab.id)}
-              className={`px-5 py-3 text-xs font-semibold whitespace-nowrap border-b-2 transition-all relative flex items-center gap-1.5 ${
-                currentOrderTab === tab.id ? "border-blue-500 text-blue-400 bg-zinc-900/40" : "border-transparent text-zinc-400 hover:text-white"
-              }`}
+              className={`px-5 py-3 text-xs font-semibold whitespace-nowrap border-b-2 transition-all relative flex items-center gap-1.5 ${currentOrderTab === tab.id ? "border-blue-500 text-blue-400 bg-zinc-900/40" : "border-transparent text-zinc-400 hover:text-white"
+                }`}
             >
               {tab.label}
               <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${currentOrderTab === tab.id ? "bg-blue-950 text-blue-300" : "bg-zinc-800 text-zinc-500"}`}>{count}</span>
@@ -1229,7 +1353,7 @@ const OrdersTabsContainer: React.FC<{
         <table className="w-full">
           <thead className="bg-[#1e1e1e] border-b border-zinc-800">
             <tr>
-              {["Kode Order", "Produk", "Varian", "Total", "Tanggal", "Status", "Pesan", "Aksi"].map((h) => (
+              {["Kode Order", "Produk", "Varian", "Total", "Tanggal", "Status", "Pesan Catatan", "Aksi"].map((h) => (
                 <th key={h} className="text-left px-6 py-4 text-zinc-400 font-semibold text-xs uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -1237,7 +1361,7 @@ const OrdersTabsContainer: React.FC<{
           <tbody className="divide-y divide-zinc-800">
             {finalFilteredOrders.length === 0 ? (
               <tr>
-                <td colSpan={7} className="text-center py-20 text-zinc-500 text-sm">Tidak ada pesanan dalam kategori status ini</td>
+                <td colSpan={8} className="text-center py-20 text-zinc-500 text-sm">Tidak ada pesanan dalam kategori status ini</td>
               </tr>
             ) : (
               finalFilteredOrders.map((order) => (
@@ -1256,7 +1380,7 @@ const OrdersTabsContainer: React.FC<{
                       <span className="text-white text-sm font-medium">{order.product.name}</span>
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-zinc-400 text-xs">Size: {order.size} <br/> Color: {order.color}</td>
+                  <td className="px-6 py-4 text-zinc-400 text-xs">Size: {order.size} <br /> Color: {order.color}</td>
                   <td className="px-6 py-4 text-sm font-semibold text-white">Rp {parseFloat(order.totalAmount).toLocaleString("id-ID")}</td>
                   <td className="px-6 py-4 text-zinc-400 text-xs">{new Date(order.createdAt).toLocaleDateString("id-ID", { day: 'numeric', month: 'short', year: 'numeric' })}</td>
                   <td className="px-6 py-4">
@@ -1273,12 +1397,14 @@ const OrdersTabsContainer: React.FC<{
                       }}
                       className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer bg-[#121212] border focus:outline-none ${getStatusColor(order.status)}`}
                     >
-                      {["pending", "waiting_verification", "processing", "shipped", "delivered", "success", "cancelled"].map((s) => (
+                      {["pending", "waiting_verification", "processing", "shipped", "success", "cancelled"].map((s) => (
                         <option key={s} value={s} className="bg-zinc-900 text-white capitalize text-sm">{s.replace("_", " ")}</option>
                       ))}
                     </select>
                   </td>
-                  <td className="px-6 py-4 text-zinc-400 text-xs">{order.notes}</td>
+                  <td className="px-6 py-4 text-xs text-zinc-400 font-medium max-w-[150px] truncate" title={order.notes || "-"}>
+                    {order.notes || "-"}
+                  </td>
                   <td className="px-6 py-4">
                     <button onClick={() => onDelete(order.id)} className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-red-400">
                       <Trash2 className="w-4 h-4" />
@@ -1313,45 +1439,140 @@ const PaymentProofTable: React.FC<{
   };
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full">
+    <div className="overflow-x-auto rounded-xl border border-zinc-800 bg-[#121212]">
+      <table className="w-full border-collapse">
         <thead className="bg-[#1e1e1e] border-b border-zinc-800">
           <tr>
-            {["Kode Order", "User", "Total", "Tanggal Upload", "Status", "Aksi"].map((h) => (
-              <th key={h} className="text-left px-6 py-4 text-zinc-400 font-semibold text-xs uppercase tracking-wider">{h}</th>
+            {[
+              "Kode Order",
+              "User",
+              "Total",
+              "Tanggal Upload",
+              "Pesan / Notes",
+              "Status Bukti",  // Penambahan kolom status pembayaran
+              "Status Order",
+              "Aksi"
+            ].map((h) => (
+              <th
+                key={h}
+                className="text-left px-6 py-4 text-zinc-400 font-bold text-xs uppercase tracking-wider whitespace-nowrap"
+              >
+                {h}
+              </th>
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-zinc-800">
+        <tbody className="divide-y divide-zinc-800/60">
           {paymentProofs.length === 0 ? (
             <tr>
-              <td colSpan={6} className="text-center py-16 text-zinc-500 text-sm">Tidak ada bukti pembayaran ditemukan</td>
+              {/* Colspan diubah jadi 8 mengikuti total header yang baru */}
+              <td colSpan={8} className="text-center py-16 text-zinc-500 text-sm italic">
+                Tidak ada bukti pembayaran ditemukan
+              </td>
             </tr>
           ) : (
-            paymentProofs.map((payment) => (
-              <tr key={payment.paymentId} className="hover:bg-zinc-900/30 transition-colors">
-                <td className="px-6 py-4 text-white font-mono text-xs font-semibold tracking-wider">{payment.orderCode}</td>
-                <td className="px-6 py-4">
-                  <div className="text-sm font-medium text-white">{payment.user.name}</div>
-                  <div className="text-zinc-500 text-xs">{payment.user.email}</div>
-                </td>
-                <td className="px-6 py-4 text-sm font-semibold text-white">Rp {parseFloat(payment.orderDetail.totalAmount).toLocaleString("id-ID")}</td>
-                <td className="px-6 py-4 text-zinc-400 text-xs">{new Date(payment.uploadedAt).toLocaleString("id-ID", { dateStyle: "medium", timeStyle: "short" })}</td>
-                <td className="px-6 py-4">
-                  <span className={`px-2.5 py-0.5 rounded text-xs font-medium ${getStatusColor(payment.orderDetail.status)}`}>{getStatusLabel(payment.orderDetail.status)}</span>
-                </td>
-                <td className="px-6 py-4">
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => onView(payment)} className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-blue-400">
-                      <Eye className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => onDelete(payment.paymentId)} className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-red-400">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))
+            paymentProofs.map((payment) => {
+              // KUNCI FIX JAM: Paksa JavaScript mendeteksi string sebagai UTC agar konversi Asia/Jakarta berjalan
+              const rawDate = payment.uploadedAt;
+              const cleanDate = rawDate && !rawDate.endsWith('Z') && !rawDate.includes('+')
+                ? `${rawDate}Z`
+                : rawDate;
+
+              // Fungsi dinamis pembentuk warna badge khusus untuk status pembayaran (pending, approved, rejected)
+              const getPaymentStatusBadge = (status: string) => {
+                switch (status?.toLowerCase()) {
+                  case "approved":
+                    return "bg-emerald-950/40 text-emerald-400 border border-emerald-900/50";
+                  case "rejected":
+                    return "bg-red-950/40 text-red-400 border border-red-900/50";
+                  case "pending":
+                  default:
+                    return "bg-yellow-950/30 text-yellow-500 border border-yellow-900/40";
+                }
+              };
+
+              return (
+                <tr key={payment.paymentId} className="hover:bg-zinc-900/30 transition-colors group">
+                  {/* 1. Kode Order */}
+                  <td className="px-6 py-4 text-white font-mono text-xs font-semibold tracking-wider whitespace-nowrap">
+                    {payment.orderCode}
+                  </td>
+
+                  {/* 2. Informasi User */}
+                  <td className="px-6 py-4 min-w-[150px]">
+                    <div className="text-sm font-semibold text-white truncate max-w-[180px]">
+                      {payment.user?.name || "User"}
+                    </div>
+                    <div className="text-zinc-500 text-xs truncate max-w-[180px]">
+                      {payment.user?.email || "-"}
+                    </div>
+                  </td>
+
+                  {/* 3. Total Amount */}
+                  <td className="px-6 py-4 text-sm font-bold text-blue-400 font-mono whitespace-nowrap">
+                    Rp {parseFloat(payment.orderDetail?.totalAmount || "0").toLocaleString("id-ID")}
+                  </td>
+
+                  {/* 4. Tanggal Upload (Auto Fix WIB Jakarta) */}
+                  <td className="px-6 py-4 text-zinc-400 text-xs whitespace-nowrap">
+                    {cleanDate ? (
+                      new Date(cleanDate).toLocaleString('id-ID', {
+                        timeZone: 'Asia/Jakarta',
+                        day: '2-digit',
+                        month: 'long',
+                        year: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      }) + " WIB"
+                    ) : "-"}
+                  </td>
+
+                  {/* 5. Pesan / Notes (Dinamis: Jika sangat panjang tidak akan merusak layout tabel) */}
+                  <td className="px-6 py-4 text-xs text-zinc-300 max-w-[200px]">
+                    <div
+                      className="truncate transition-all duration-150 group-hover:whitespace-normal group-hover:text-white"
+                      title={payment.notes || "Tidak ada catatan"}
+                    >
+                      {payment.notes || <span className="text-zinc-600 italic">-</span>}
+                    </div>
+                  </td>
+
+                  {/* 6. Status Bukti Pembayaran (Baru) */}
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider ${getPaymentStatusBadge(payment.status)}`}>
+                      {payment.status || "pending"}
+                    </span>
+                  </td>
+
+                  {/* 7. Status Order Detail */}
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <span className={`px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider ${getStatusColor(payment.orderDetail?.status)}`}>
+                      {getStatusLabel(payment.orderDetail?.status)}
+                    </span>
+                  </td>
+
+                  {/* 8. Aksi Action Buttons */}
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => onView(payment)}
+                        className="p-1.5 hover:bg-zinc-800 text-blue-400 hover:text-blue-300 rounded-lg transition-colors"
+                        title="Detail Bukti"
+                      >
+                        <Eye className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => onDelete(payment.paymentId)}
+                        className="p-1.5 hover:bg-red-950/40 text-red-400 hover:text-red-300 rounded-lg transition-colors"
+                        title="Hapus Bukti"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })
           )}
         </tbody>
       </table>
@@ -1359,7 +1580,6 @@ const PaymentProofTable: React.FC<{
   );
 };
 
-// ─── NEW COMPONENT: MANAGE USERS PANEL (TAB MENU SEPARATE) ───
 const ManageUsersPanel: React.FC<{
   users: UserData[];
   onUpdateRole: (id: string, role: "user" | "admin") => void;
@@ -1375,7 +1595,6 @@ const ManageUsersPanel: React.FC<{
 
   return (
     <div className="w-full flex flex-col">
-      {/* Search Filter Header */}
       <div className="p-4 bg-[#1a1a1a] border-b border-zinc-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="relative flex-1 max-w-md">
           <input
@@ -1387,12 +1606,9 @@ const ManageUsersPanel: React.FC<{
           />
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
         </div>
-        <div className="text-xs text-zinc-400 font-medium">
-          Total Pengguna Terfilter: <span className="text-white font-bold">{finalFilteredUsers.length}</span> Akun
-        </div>
+        <div className="text-xs text-zinc-400 font-medium">Total Pengguna Terfilter: <span className="text-white font-bold">{finalFilteredUsers.length}</span> Akun</div>
       </div>
 
-      {/* Tabel Database User */}
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-[#1e1e1e] border-b border-zinc-800">
@@ -1404,24 +1620,17 @@ const ManageUsersPanel: React.FC<{
           </thead>
           <tbody className="divide-y divide-zinc-800">
             {finalFilteredUsers.length === 0 ? (
-              <tr>
-                <td colSpan={5} className="text-center py-20 text-zinc-500 text-sm">Tidak ada data pengguna terdaftar ditemukan</td>
-              </tr>
+              <tr><td colSpan={5} className="text-center py-20 text-zinc-500 text-sm">Tidak ada data pengguna terdaftar ditemukan</td></tr>
             ) : (
               finalFilteredUsers.map((user) => (
                 <tr key={user.id} className="hover:bg-zinc-900/30 transition-colors">
                   <td className="px-6 py-4 text-sm font-medium text-white">{user.fullName}</td>
                   <td className="px-6 py-4 text-sm text-zinc-400 break-all">{user.email}</td>
                   <td className="px-6 py-4 text-sm">
-                    {/* Mengubah Role via Dropdown Select */}
                     <select
                       value={user.role}
                       onChange={(e) => onUpdateRole(user.id, e.target.value as "user" | "admin")}
-                      className={`px-3 py-1 rounded text-xs font-semibold uppercase tracking-wider cursor-pointer bg-[#121212] border focus:outline-none ${
-                        user.role === "admin" 
-                          ? "bg-red-950/40 text-red-400 border-red-900/50" 
-                          : "bg-blue-950/40 text-blue-400 border-blue-900/50"
-                      }`}
+                      className={`px-3 py-1 rounded text-xs font-semibold uppercase tracking-wider cursor-pointer bg-[#121212] border focus:outline-none ${user.role === "admin" ? "bg-red-950/40 text-red-400 border-red-900/50" : "bg-blue-950/40 text-blue-400 border-blue-900/50"}`}
                     >
                       <option value="user" className="bg-zinc-900 text-blue-400 text-xs">USER</option>
                       <option value="admin" className="bg-zinc-900 text-red-400 text-xs">ADMIN</option>
@@ -1431,12 +1640,7 @@ const ManageUsersPanel: React.FC<{
                     {new Date(user.createdAt).toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" })}
                   </td>
                   <td className="px-6 py-4">
-                    {/* Menghapus User Akun */}
-                    <button
-                      onClick={() => onDeleteUser(user.id)}
-                      className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-red-400"
-                      title="Hapus Akun Permanen"
-                    >
+                    <button onClick={() => onDeleteUser(user.id)} className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-red-400" title="Hapus Akun Permanen">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </td>
@@ -1454,7 +1658,7 @@ const PaymentDetailModal: React.FC<{
   payment: PaymentProof;
   onClose: () => void;
   onVerify: (id: string) => void;
-  onReject: (id: string) => void;
+  onReject: (payment: PaymentProof) => void;
 }> = ({ payment, onClose, onVerify, onReject }) => {
   const getStatusColor = (status: string) => {
     const map: Record<string, string> = {
@@ -1472,16 +1676,16 @@ const PaymentDetailModal: React.FC<{
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
       <div className="bg-[#1a1a1a] border border-zinc-800 rounded-xl max-w-2xl w-full max-h-[90vh] overflow-y-auto shadow-2xl">
-        <div className="sticky top-0 bg-[#1a1a1a] border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
+        <div className="sticky top-0 bg-[#1a1a1a] border-b border-zinc-800 px-6 py-4 flex items-center justify-between z-10">
           <h2 className="text-lg font-bold text-white">Detail Bukti Pembayaran</h2>
-          <button onClick={onClose} className="text-zinc-400 hover:text-white p-1 hover:bg-zinc-800 rounded-md">
+          <button type="button" onClick={onClose} className="text-zinc-400 hover:text-white p-1 hover:bg-zinc-800 rounded-md">
             <X className="w-5 h-5" />
           </button>
         </div>
         <div className="p-6 space-y-5">
           <div>
             <label className="block text-zinc-400 text-xs font-semibold uppercase tracking-wider mb-1.5">Status Verifikasi</label>
-            <span className={`inline-block px-3 py-1 rounded text-sm font-medium border ${getStatusColor(payment.orderDetail.status)}`}>{getStatusLabel(payment.orderDetail.status)}</span>
+            <span className={`inline-block px-3 py-1 rounded text-sm font-medium border ${getStatusColor(payment.orderDetail?.status)}`}>{getStatusLabel(payment.orderDetail?.status)}</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="bg-[#121212] p-3 rounded-lg border border-zinc-800">
@@ -1490,17 +1694,17 @@ const PaymentDetailModal: React.FC<{
             </div>
             <div className="bg-[#121212] p-3 rounded-lg border border-zinc-800">
               <label className="block text-zinc-500 text-xs mb-0.5">Total Pembayaran</label>
-              <p className="text-blue-400 font-bold">Rp {parseFloat(payment.orderDetail.totalAmount).toLocaleString("id-ID")}</p>
+              <p className="text-blue-400 font-bold">Rp {parseFloat(payment.orderDetail?.totalAmount).toLocaleString("id-ID")}</p>
             </div>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="bg-[#121212] p-3 rounded-lg border border-zinc-800">
               <label className="block text-zinc-500 text-xs mb-0.5">Nama Pembeli</label>
-              <p className="text-white text-sm font-medium">{payment.user.name}</p>
+              <p className="text-white text-sm font-medium">{payment.user?.name}</p>
             </div>
             <div className="bg-[#121212] p-3 rounded-lg border border-zinc-800">
               <label className="block text-zinc-500 text-xs mb-0.5">Email</label>
-              <p className="text-white text-sm font-medium break-all">{payment.user.email}</p>
+              <p className="text-white text-sm font-medium break-all">{payment.user?.email}</p>
             </div>
           </div>
           <div className="bg-[#121212] p-3 rounded-lg border border-zinc-800">
@@ -1513,13 +1717,13 @@ const PaymentDetailModal: React.FC<{
               <Image src={`${BASE_IMAGE_URL}/${payment.photoUrl}`} alt="Bukti Pembayaran" width={500} height={500} unoptimized className="max-w-full h-auto max-h-[350px] object-contain rounded" />
             </div>
           </div>
-          {payment.orderDetail.status === "waiting_verification" ? (
+          {payment.orderDetail?.status === "waiting_verification" ? (
             <div className="flex gap-3 pt-2">
               <button onClick={() => onVerify(payment.paymentId)} className="flex-1 bg-green-600 text-white py-2.5 rounded-lg hover:bg-green-700 transition-colors font-semibold flex items-center justify-center gap-2 text-sm">
-                <Check className="w-4 h-4" /> Verifikasi
+                <Check className="w-4 h-4" /> Setujui Verifikasi
               </button>
-              <button onClick={() => onReject(payment.paymentId)} className="flex-1 bg-red-600 text-white py-2.5 rounded-lg hover:bg-red-700 transition-colors font-semibold flex items-center justify-center gap-2 text-sm">
-                <Ban className="w-4 h-4" /> Tolak
+              <button onClick={() => onReject(payment)} className="flex-1 bg-red-600 text-white py-2.5 rounded-lg hover:bg-red-700 transition-colors font-semibold flex items-center justify-center gap-2 text-sm">
+                <Ban className="w-4 h-4" /> Tolak Pembayaran
               </button>
             </div>
           ) : (
@@ -1539,8 +1743,31 @@ const ProductModal: React.FC<{
   onClose: () => void;
   onSave: (p: Product) => void;
 }> = ({ product, categories, onClose, onSave }) => {
+  const generateRandomSKU = () => {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let sku = "MHN-";
+    for (let i = 0; i < 6; i++) {
+      sku += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return sku;
+  };
+
   const [formData, setFormData] = useState<Product>(
-    product || { id: "", name: "", code: "", image: "", images: [], description: "", base_price: "", discount_price: "", stock: 0, size: [], color: [], weight: [] }
+    product || {
+      id: "",
+      name: "",
+      code: generateRandomSKU(),
+      image: "",
+      images: [],
+      description: "",
+      base_price: "",
+      discount_price: "",
+      stock: 0,
+      size: [],
+      color: [],
+      weight: [],
+      category: { id: "", name: "" }
+    }
   );
   const [sizeInput, setSizeInput] = useState("");
   const [colorInput, setColorInput] = useState("");
@@ -1585,8 +1812,8 @@ const ProductModal: React.FC<{
               <input type="text" value={formData.name} onChange={(e) => setFormData({ ...formData, name: e.target.value })} className="w-full bg-[#121212] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-700" required />
             </div>
             <div>
-              <label className="block text-zinc-400 text-xs font-medium mb-1.5">Kode Produk*</label>
-              <input type="text" value={formData.code} onChange={(e) => setFormData({ ...formData, code: e.target.value })} className="w-full bg-[#121212] border border-zinc-800 rounded px-3 py-2 text-sm text-white font-mono focus:outline-none focus:border-zinc-700" required />
+              <label className="block text-zinc-400 text-xs font-medium mb-1.5">Kode SKU Produk (Otomatis)</label>
+              <input type="text" value={formData.code} className="w-full bg-[#161616] border border-zinc-800 rounded px-3 py-2 text-sm text-zinc-500 font-mono font-bold tracking-wider focus:outline-none" readOnly />
             </div>
           </div>
 
@@ -1696,7 +1923,7 @@ const ProductModal: React.FC<{
 
           <div className="flex gap-3 pt-2">
             <button type="submit" className="flex-1 bg-white text-black py-2.5 rounded-lg hover:bg-zinc-200 transition-colors font-semibold flex items-center justify-center gap-2 text-sm">
-              <Save className="w-4 h-4" /> Simpan
+              <Save className="w-4 h-4" /> Simpan Produk
             </button>
             <button type="button" onClick={onClose} className="flex-1 bg-zinc-800 text-zinc-300 py-2.5 rounded-lg hover:bg-zinc-700 transition-colors font-semibold text-sm">Batal</button>
           </div>
@@ -1706,6 +1933,53 @@ const ProductModal: React.FC<{
   );
 };
 
+// ─── MODAL DIALOG: REJECT BUKTI TRANSFER PEMBAYARAN ───
+const RejectPaymentModal: React.FC<{
+  isOpen: boolean;
+  onClose: () => void;
+  reason: string;
+  setReason: (val: string) => void;
+  onConfirm: () => void;
+}> = ({ isOpen, onClose, reason, setReason, onConfirm }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
+      <div className="bg-[#1a1a1a] border border-zinc-800 rounded-xl max-w-md w-full shadow-2xl overflow-hidden">
+        <div className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between bg-[#161616]">
+          <h2 className="text-sm font-bold text-white flex items-center gap-2">
+            <Ban className="w-4 h-4 text-red-400" /> Tolak Verifikasi Pembayaran
+          </h2>
+          <button type="button" onClick={onClose} className="text-zinc-400 hover:text-white p-1 hover:bg-zinc-800 rounded-md">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-xs text-zinc-400 leading-relaxed">
+            Mohon isi alasan penolakan bukti transfer ini. Alasan tertulis ini otomatis dikirim ke histori pesanan konsumen agar mereka dapat melakukan upload ulang dengan berkas bukti yang benar.
+          </p>
+          <div>
+            <label className="block text-zinc-400 text-xs font-medium mb-1.5">Alasan Penolakan Bukti Transfer*</label>
+            <textarea
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Contoh: Nominal transfer kurang / Foto bukti buram & tidak terbaca..."
+              className="w-full bg-[#121212] border border-zinc-800 rounded-lg p-3 text-xs text-white h-24 focus:outline-none focus:border-zinc-700定位 resize-none placeholder:text-zinc-600"
+              required
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button onClick={onConfirm} className="flex-1 bg-red-600 hover:bg-red-700 text-white py-2 rounded-lg transition-colors font-semibold text-xs flex items-center justify-center gap-1.5">
+              <Check className="w-3.5 h-3.5" /> Konfirmasi Tolak Transfer
+            </button>
+            <button type="button" onClick={onClose} className="flex-1 bg-zinc-800 text-zinc-300 py-2 rounded-lg hover:bg-zinc-700 transition-colors font-semibold text-xs">Kembali</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── NEW COMPONENT: APRIORI ANALYTICS (TAB PANEL) ───
 const AprioriAnalytics: React.FC<{
   params: AprioriParams;
   setParams: (params: AprioriParams) => void;
@@ -1726,11 +2000,11 @@ const AprioriAnalytics: React.FC<{
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5 mb-5">
           <div>
             <label className="block text-zinc-400 text-xs mb-1.5">Tanggal Mulai</label>
-            <input type="date" value={params.startDate} onChange={(e) => setParams({ ...params, startDate: e.target.value })} className="w-full bg-[#161616] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-700" />
+            <input type="date" value={params.startDate} onChange={(e) => setParams({ ...params, startDate: e.target.value })} className="w-full bg-[#161616] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-700 accent-white [color-scheme:dark]" />
           </div>
           <div>
             <label className="block text-zinc-400 text-xs mb-1.5">Tanggal Akhir</label>
-            <input type="date" value={params.endDate} onChange={(e) => setParams({ ...params, endDate: e.target.value })} className="w-full bg-[#161616] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-700" />
+            <input type="date" value={params.endDate} onChange={(e) => setParams({ ...params, endDate: e.target.value })} className="w-full bg-[#161616] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-700 accent-white [color-scheme:dark]" />
           </div>
           <div className="bg-[#161616] p-4 rounded-lg border border-zinc-800/80">
             <label className="block text-zinc-400 text-xs font-medium mb-2">Minimum Support ({(params.minSupport * 100).toFixed(0)}%)</label>
@@ -1824,13 +2098,6 @@ const AprioriAnalytics: React.FC<{
           </div>
         </div>
       )}
-
-      {!analysis && !isLoading && (
-        <div className="text-center py-20 text-zinc-600 bg-[#121212] rounded-xl border border-zinc-800">
-          <BarChart3 className="w-12 h-12 mx-auto mb-3 opacity-30 text-zinc-500" />
-          <p className="text-sm">Silakan tentukan parameter di atas lalu tekan tombol "Proses Aturan Apriori"</p>
-        </div>
-      )}
     </div>
   );
 };
@@ -1895,7 +2162,7 @@ const CategoryModal: React.FC<{
             <input type="text" value={formData.tag} onChange={(e) => setFormData({ ...formData, tag: e.target.value })} className="w-full bg-[#121212] border border-zinc-800 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-zinc-700" placeholder="#hashtag" />
           </div>
           <div className="flex gap-3 pt-2">
-            <button type="submit" className="flex-1 bg-white text-black py-2.5 rounded-lg hover:bg-zinc-200 transition-colors font-semibold flex items-center justify-center gap-2 text-sm"><Save className="w-4 h-4" /> Simpan</button>
+            <button type="submit" className="flex-1 bg-white text-black py-2.5 rounded-lg hover:bg-zinc-200 transition-colors font-semibold flex items-center justify-center gap-2 text-sm"><Save className="w-4 h-4" /> Simpan Kategori</button>
             <button type="button" onClick={onClose} className="flex-1 bg-zinc-800 text-zinc-300 py-2.5 rounded-lg hover:bg-zinc-700 transition-colors font-semibold text-sm">Batal</button>
           </div>
         </form>
