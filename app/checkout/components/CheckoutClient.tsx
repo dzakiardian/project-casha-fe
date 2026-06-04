@@ -93,14 +93,11 @@ export default function CheckoutClient({ address: addressList, itemProducts }: C
         weight: item.product.weight || "1000",
       }));
 
-      // Pembagian rata biaya ongkir dan asuransi per item untuk database orders
-      const dividedShippingCost = Math.round(selectedShipping.cost / itemProducts.length);
-
       const payload = {
-        items: formattedItems, // ─── HARUS BERNAMA ITEMS SUPAYA LOLOS IF BACKEND ───
-        shippingCost: dividedShippingCost,
+        items: formattedItems,
+        shippingCost: selectedShipping.cost, // Kirim ongkir utuh saja, backend yang atur pembagiannya
         insuranceCost: 0,
-        notes: "Checkout Split Invoice",
+        notes: "Checkout Gabungan Invoice",
       };
 
       // 2. Tembak CUKUP SEKALI ke endpoint checkout backend kita
@@ -113,22 +110,26 @@ export default function CheckoutClient({ address: addressList, itemProducts }: C
         throw new Error(res.message || "Gagal memproses pesanan di server");
       }
 
-      toast.success("Semua invoice pesanan berhasil di-split otomatis!");
+      toast.success("Pesanan berhasil dibuat!");
 
-      // 3. Simpan data tracking pending order ke Cookies untuk halaman pembayaran
-      const cookiesPayload = res.data.map((order: any) => ({
-        orderId: order.orderId,
-        orderCode: order.orderCode,
-        date: new Date().toISOString(),
-        origin: "Sumub Kidul, Kecamatan Kesesi, Kabupaten Pekalongan",
-        selectedCourier: selectedShipping,
-        totalPrice: totalPrice + selectedShipping.cost,
-      }));
+      // ─── FIX KUNCI UTAMA: Bikin payload cookies jadi 1 DATA TUNGGAL (Tanpa .map) ───
+      // Kita bungkus dalam array berisi 1 objek saja agar halaman /pembayaran abang tidak crash membaca array length
+      const cookiesPayload = [
+        {
+          orderCode: res.data.orderCode, // Ambil 1 master orderCode tunggal dari backend
+          date: new Date().toISOString(),
+          origin: "Sumub Kidul, Kecamatan Kesesi, Kabupaten Pekalongan",
+          selectedCourier: selectedShipping,
+          totalPrice: res.data.grandTotal, // Ambil total harga + ongkir yang sudah valid dari backend
+        }
+      ];
 
+      // Simpan ke Cookies
       Cookies.set("pendingOrder", JSON.stringify(cookiesPayload), { expires: 1 });
 
+      // Alihkan langsung ke halaman pembayaran
       document.location.href = '/pembayaran';
-      // router.refresh();
+
     } catch (error: any) {
       console.error("Error saat checkout:", error);
       toast.error(error.message || "Gagal membuat pesanan. Coba lagi ya Bang.");

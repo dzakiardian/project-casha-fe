@@ -30,12 +30,12 @@ interface PendingOrder {
   size: string;
   status: string;
   totalAmount: string;
+  itemCount?: number; // Tambahan properti info pelengkap
 }
 
 export default function PaymentProof() {
   const router = useRouter();
   const params = useParams();
-  const [pendingOrders, setPendingOrders] = useState<PendingOrder[]>([]);
   const [selectedOrder, setSelectedOrder] = useState<PendingOrder | null>(null);
   const [proofImage, setProofImage] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string>("");
@@ -45,31 +45,52 @@ export default function PaymentProof() {
   const fetchOrders = async () => {
     try {
       const res = await clientFetch("/orders");
-      const ordPnd = res.data.filter((itm: { status: string }) => itm.status == "pending");
-      setDataOrders(ordPnd);
+      const ordPnd = res.data.filter((itm: { status: string }) => itm.status === "pending");
+
+      // ─── LOGIKA KUNCI GABUNG CARD INVOICE KEMBAR ───
+      const groupedMap: { [key: string]: PendingOrder } = {};
+
+      ordPnd.forEach((order: any) => {
+        const code = order.orderCode;
+        if (!groupedMap[code]) {
+          // Jika kode invoice belum terdaftar, masukkan sebagai data dasar card utama
+          groupedMap[code] = {
+            ...order,
+            itemCount: 1,
+            // Simpan nilai total amount awal dalam bentuk angka
+            totalAmount: String(parseFloat(order.totalAmount || "0"))
+          };
+        } else {
+          // JIKA KODE INVOICE KEMBAR: Akumulasikan total tagihan biayanya jadi satu kesatuan
+          const currentTotal = parseFloat(groupedMap[code].totalAmount);
+          const nextTotal = parseFloat(order.totalAmount || "0");
+          
+          groupedMap[code].totalAmount = String(currentTotal + nextTotal);
+          groupedMap[code].itemCount = (groupedMap[code].itemCount || 1) + 1;
+        }
+      });
+
+      // Mengubah object map kembali menjadi array bersih untuk dibaca .map() react loop
+      const finalGroupedOrders = Object.values(groupedMap);
+
+      setDataOrders(finalGroupedOrders);
+
+      // Jika ada orderId dari params atau data cuma ada 1 invoice gabungan, auto-select
+      const paramOrderId = params?.orderId as string | undefined;
+      if (paramOrderId) {
+        const found = finalGroupedOrders.find((o) => o.id === paramOrderId);
+        if (found) setSelectedOrder(found);
+      } else if (finalGroupedOrders.length === 1) {
+        setSelectedOrder(finalGroupedOrders[0]);
+      }
+
     } catch (error) {
-      console.log(error);
+      console.error("Gagal memuat riwayat pesanan:", error);
     }
   };
 
   useEffect(() => {
     fetchOrders();
-    const orderData = dataOrders;
-
-    if (!orderData) {
-      toast.info("Tidak ada pesanan yang menunggu pembayaran");
-      router.push("/profile/orders");
-      return;
-    }
-
-    // Jika ada orderId dari params, auto select
-    const paramOrderId = params?.orderId as string | undefined;
-    if (paramOrderId) {
-      const found = dataOrders.find((o) => o.id === paramOrderId);
-      if (found) setSelectedOrder(found);
-    } else if (dataOrders.length === 1) {
-      setSelectedOrder(dataOrders[0]);
-    }
   }, []);
 
   const handleSelectOrder = (order: PendingOrder) => {
@@ -199,14 +220,15 @@ export default function PaymentProof() {
                             })}
                           </span>
                         </div>
-                        <p className="text-zinc-500 text-xs truncate">
-                          {order.status}
+                        <p className="text-emerald-500 font-medium text-xs">
+                          {order.itemCount && order.itemCount > 1 
+                            ? `${order.itemCount} Produk Gabungan` 
+                            : "1 Produk"}
                         </p>
                       </div>
                     </div>
 
                     {/* Product Info */}
-
                     <div className="border-t border-zinc-800 pt-3">
                       <div className="flex items-center gap-2">
                         {order.product.image && (
@@ -220,15 +242,15 @@ export default function PaymentProof() {
                           />
                         )}
                         <p className="text-white text-xs truncate flex-1">
-                          {order.product.name}
+                          {order.product.name} {order.itemCount && order.itemCount > 1 ? "..." : ""}
                         </p>
                       </div>
                     </div>
 
                     <div className="border-t border-zinc-800 pt-3">
                       <p className="text-xs text-zinc-400">Total Pembayaran</p>
-                      <p className="text-white font-bold">
-                        Rp {parseInt(order.totalAmount).toLocaleString("id-ID")}
+                      <p className="text-white font-bold text-sm">
+                        Rp {parseFloat(order.totalAmount).toLocaleString("id-ID")}
                       </p>
                     </div>
                   </div>
@@ -293,9 +315,9 @@ export default function PaymentProof() {
                   </h3>
                   <div className="border-t border-zinc-800 pt-2 flex justify-between text-white">
                     <span className="font-bold">Total Pembayaran</span>
-                    <span className="font-bold text-xl">
+                    <span className="font-bold text-xl text-blue-400">
                       Rp{" "}
-                      {parseInt(selectedOrder.totalAmount).toLocaleString(
+                      {parseFloat(selectedOrder.totalAmount).toLocaleString(
                         "id-ID",
                       )}
                     </span>
@@ -392,8 +414,7 @@ export default function PaymentProof() {
 
                     <p className="text-zinc-500 text-xs text-center">
                       Dengan mengupload bukti pembayaran, pesanan Anda akan
-                      segera diproses setelah verifikasi admin (maksimal 1x24
-                      jam)
+                      segera diproses setelah verifikasi admin (maksimal 1x24 jam)
                     </p>
                   </form>
                 </div>

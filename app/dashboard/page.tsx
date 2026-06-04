@@ -428,17 +428,23 @@ export default function AdminPage() {
     }
   };
 
-  const handleDeleteOrder = async (id: string) => {
-    if (!confirm("Apakah Anda yakin ingin menghapus order ini?")) return;
-    try {
-      await clientFetch(`/orders/${id}`, { method: "DELETE" });
-      setOrders(orders.filter((o) => o.id !== id));
-      toast.success("Order berhasil dihapus!");
-      fetchAll();
-    } catch (error) {
-      toast.error("Gagal menghapus order");
-    }
-  };
+const handleDeleteOrder = async (orderCode: string) => {
+  if (!confirm(`Apakah Anda yakin ingin menghapus seluruh pesanan dengan Kode #${orderCode}?`)) return;
+  
+  try {
+    // ─── FIX KUNCI: Tembak endpoint berdasarkan orderCode ───
+    await clientFetch(`/orders/${orderCode}`, { method: "DELETE" });
+    
+    // Filter state agar semua produk yang kodenya sama langsung lenyap dari layar browser
+    setOrders(orders.filter((o) => o.orderCode !== orderCode));
+    
+    toast.success(`Seluruh pesanan untuk kode #${orderCode} berhasil dihapus!`);
+    fetchAll(); // Refresh ulang data biar makin mantap sinkron
+  } catch (error) {
+    console.error(error);
+    toast.error("Gagal menghapus order");
+  }
+};
 
   // Payment handlers
   const handleVerifyPayment = async (paymentId: string) => {
@@ -446,11 +452,17 @@ export default function AdminPage() {
       await clientFetch(`/payments/${paymentId}/verify`, { method: "PATCH", body: JSON.stringify({ status: "approveed" }) });
 
       const paymentItem = paymentProofs.find(p => p.paymentId === paymentId);
-      if (paymentItem?.orderDetail?.orderId) {
-        await clientFetch(`/orders/${paymentItem.orderDetail.orderId}/status`, {
+
+      console.log(paymentItem, 'a')
+
+      // Ganti dari orderDetail.orderId menjadi orderDetail.orderCode (atau sesuaikan dengan property objek paymentProofs milikmu)
+      if (paymentItem?.orderCode) {
+        await clientFetch(`/orders/${paymentItem.orderCode}/status`, {
           method: "PATCH",
           body: JSON.stringify({ status: "processing" }),
         });
+
+        toast.success("Status semua item di invoice ini berhasil diubah ke Processing!");
       }
 
       setPaymentProofs(
@@ -1265,9 +1277,9 @@ const CategoriesTable: React.FC<{
 
 const OrdersTabsContainer: React.FC<{
   orders: Order[];
-  onUpdateStatus: (id: string, status: string) => void;
-  onDelete: (id: string) => void;
-  setSelectedOrderIdToCancel: (id: string | null) => void;
+  onUpdateStatus: (orderCode: string, status: string) => void; // Mengubah parameter ke orderCode
+  onDelete: (orderCode: string) => void;
+  setSelectedOrderIdToCancel: (orderCode: string | null) => void; // Mengubah parameter ke orderCode
   setIsCancelModalOpen: (open: boolean) => void;
 }> = ({ orders, onUpdateStatus, onDelete, setSelectedOrderIdToCancel, setIsCancelModalOpen }) => {
   const [currentOrderTab, setCurrentOrderTab] = useState<string>("all");
@@ -1283,10 +1295,50 @@ const OrdersTabsContainer: React.FC<{
     { id: "cancelled", label: "Dibatalkan" },
   ];
 
-  const statusFiltered = currentOrderTab === "all" ? orders : orders.filter((o) => o.status === currentOrderTab);
-  const finalFilteredOrders = statusFiltered.filter(
-    (o) => o.orderCode.toLowerCase().includes(orderSearch.toLowerCase()) || o.product.name.toLowerCase().includes(orderSearch.toLowerCase())
-  );
+  // ─── LOGIKA KUNCI GABUNG DATA INVOICE DI SISI ADMIN ───
+  const groupedOrdersMap: { [key: string]: any } = {};
+
+  orders.forEach((order) => {
+    const code = order.orderCode;
+
+    // Struktur data ringkas tiap item produk internal
+    const productItem = {
+      id: order.id,
+      name: order.product?.name || "Produk",
+      image: order.product?.image,
+      size: order.size,
+      color: order.color,
+    };
+
+    if (!groupedOrdersMap[code]) {
+      groupedOrdersMap[code] = {
+        ...order,
+        totalAmount: parseFloat(order.totalAmount || "0"),
+        items: [productItem] // Masukkan ke array penampung rincian produk
+      };
+    } else {
+      // Jika orderCode sama, akumulasikan finansial total bayar & kumpulkan list produknya
+      groupedOrdersMap[code].totalAmount += parseFloat(order.totalAmount || "0");
+      groupedOrdersMap[code].items.push(productItem);
+    }
+  });
+
+  // Ubah hasil grouping map kembali menjadi array bersih
+  const finalGroupedOrdersArray = Object.values(groupedOrdersMap);
+
+  // Filter berdasarkan Tab Status Marketplace
+  const statusFiltered = currentOrderTab === "all"
+    ? finalGroupedOrdersArray
+    : finalGroupedOrdersArray.filter((o) => o.status === currentOrderTab);
+
+  // Filter berdasarkan Input Kolom Pencarian Admin (Mencari di Kode Order ATAU nama salah satu produk di dalamnya)
+  const finalFilteredOrders = statusFiltered.filter((o) => {
+    const matchCode = o.orderCode.toLowerCase().includes(orderSearch.toLowerCase());
+    const matchProduct = o.items.some((item: any) =>
+      item.name.toLowerCase().includes(orderSearch.toLowerCase())
+    );
+    return matchCode || matchProduct;
+  });
 
   const handleCopyToClipboard = (code: string) => {
     navigator.clipboard.writeText(code);
@@ -1308,6 +1360,7 @@ const OrdersTabsContainer: React.FC<{
 
   return (
     <div className="w-full flex flex-col">
+      {/* Search Bar Panel */}
       <div className="p-4 bg-[#1a1a1a] border-b border-zinc-800 flex items-center justify-between gap-4">
         <div className="relative flex-1 max-w-md">
           <input
@@ -1319,12 +1372,17 @@ const OrdersTabsContainer: React.FC<{
           />
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
         </div>
-        <div className="text-xs text-zinc-400 font-medium">Ditemukan: <span className="text-white font-bold">{finalFilteredOrders.length}</span> item</div>
+        <div className="text-xs text-zinc-400 font-medium">
+          Ditemukan: <span className="text-white font-bold">{finalFilteredOrders.length}</span> Invoice
+        </div>
       </div>
 
+      {/* Tabs Menu Navigasi */}
       <div className="flex border-b border-zinc-800 bg-[#161616] overflow-x-auto scrollbar-none">
         {orderStatuses.map((tab) => {
-          const count = tab.id === "all" ? orders.length : orders.filter((o) => o.status === tab.id).length;
+          const count = tab.id === "all"
+            ? finalGroupedOrdersArray.length
+            : finalGroupedOrdersArray.filter((o) => o.status === tab.id).length;
           return (
             <button
               key={tab.id}
@@ -1333,12 +1391,14 @@ const OrdersTabsContainer: React.FC<{
                 }`}
             >
               {tab.label}
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${currentOrderTab === tab.id ? "bg-blue-950 text-blue-300" : "bg-zinc-800 text-zinc-500"}`}>{count}</span>
+              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${currentOrderTab === tab.id ? "bg-blue-950 text-blue-300" : "bg-zinc-800 text-zinc-500"
+                }`}>{count}</span>
             </button>
           );
         })}
       </div>
 
+      {/* Alert Warning Box */}
       {currentOrderTab === "waiting_verification" && (
         <div className="m-4 p-4 bg-orange-950/30 border border-orange-900/60 rounded-xl flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-orange-400 shrink-0 mt-0.5" />
@@ -1349,11 +1409,12 @@ const OrdersTabsContainer: React.FC<{
         </div>
       )}
 
+      {/* Datatable Wrapper */}
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead className="bg-[#1e1e1e] border-b border-zinc-800">
             <tr>
-              {["Kode Order", "Produk", "Varian", "Total", "Tanggal", "Status", "Pesan Catatan", "Aksi"].map((h) => (
+              {["Kode Order", "Daftar Produk", "Detail Varian", "Total Bayar", "Tanggal", "Status Kelola", "Pesan Catatan", "Aksi"].map((h) => (
                 <th key={h} className="text-left px-6 py-4 text-zinc-400 font-semibold text-xs uppercase tracking-wider">{h}</th>
               ))}
             </tr>
@@ -1364,8 +1425,10 @@ const OrdersTabsContainer: React.FC<{
                 <td colSpan={8} className="text-center py-20 text-zinc-500 text-sm">Tidak ada pesanan dalam kategori status ini</td>
               </tr>
             ) : (
-              finalFilteredOrders.map((order) => (
-                <tr key={order.id} className="hover:bg-zinc-900/30 transition-colors">
+              finalFilteredOrders.map((order: any) => (
+                <tr key={order.orderCode} className="hover:bg-zinc-900/30 transition-colors">
+
+                  {/* 1. Kode Order */}
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-2 group">
                       <span className="text-white font-mono text-xs font-semibold tracking-wider">{order.orderCode}</span>
@@ -1374,42 +1437,73 @@ const OrdersTabsContainer: React.FC<{
                       </button>
                     </div>
                   </td>
+
+                  {/* 2. Daftar Produk Bersarang */}
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <Image src={`${BASE_IMAGE_URL}/${order.product.image}`} alt={order.product.name} width={400} height={400} unoptimized className="w-10 h-10 object-cover rounded bg-zinc-900 border border-zinc-800" />
-                      <span className="text-white text-sm font-medium">{order.product.name}</span>
+                    <div className="flex flex-col gap-2 max-w-[250px]">
+                      {order.items?.map((item: any) => (
+                        <div key={item.id} className="flex items-center gap-3">
+                          <Image src={`${BASE_IMAGE_URL}/${item.image}`} alt={item.name} width={400} height={400} unoptimized className="w-8 h-8 object-cover rounded bg-zinc-900 border border-zinc-800 shrink-0" />
+                          <span className="text-white text-xs font-medium truncate flex-1">{item.name}</span>
+                        </div>
+                      ))}
                     </div>
                   </td>
-                  <td className="px-6 py-4 text-zinc-400 text-xs">Size: {order.size} <br /> Color: {order.color}</td>
-                  <td className="px-6 py-4 text-sm font-semibold text-white">Rp {parseFloat(order.totalAmount).toLocaleString("id-ID")}</td>
-                  <td className="px-6 py-4 text-zinc-400 text-xs">{new Date(order.createdAt).toLocaleDateString("id-ID", { day: 'numeric', month: 'short', year: 'numeric' })}</td>
+
+                  {/* 3. Detail Varian Bersarang */}
+                  <td className="px-6 py-4 text-zinc-400 text-xs">
+                    <div className="flex flex-col gap-2">
+                      {order.items?.map((item: any) => (
+                        <div key={item.id} className="h-8 flex items-center">
+                          <span>Size: <span className="uppercase text-white">{item.size || "-"}</span> | Color: <span className="text-white">{item.color || "-"}</span></span>
+                        </div>
+                      ))}
+                    </div>
+                  </td>
+
+                  {/* 4. Total Bayar Akumulasi */}
+                  <td className="px-6 py-4 text-sm font-bold text-blue-400 font-mono">
+                    Rp {order.totalAmount.toLocaleString("id-ID")}
+                  </td>
+
+                  {/* 5. Tanggal Transaksi */}
+                  <td className="px-6 py-4 text-zinc-400 text-xs whitespace-nowrap">
+                    {new Date(order.createdAt).toLocaleDateString("id-ID", { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </td>
+
+                  {/* 6. Status Kelola (Sekali ganti ganti semua status item) */}
                   <td className="px-6 py-4">
                     <select
                       value={order.status}
                       onChange={(e) => {
                         const nextStatus = e.target.value;
                         if (nextStatus === "cancelled") {
-                          setSelectedOrderIdToCancel(order.id);
+                          setSelectedOrderIdToCancel(order.orderCode); // Membawa orderCode global
                           setIsCancelModalOpen(true);
                         } else {
-                          onUpdateStatus(order.id, nextStatus);
+                          onUpdateStatus(order.orderCode, nextStatus); // Membawa orderCode global ke parent function
                         }
                       }}
-                      className={`px-2.5 py-1 rounded text-xs font-medium cursor-pointer bg-[#121212] border focus:outline-none ${getStatusColor(order.status)}`}
+                      className={`px-2.5 py-1 rounded text-xs font-bold cursor-pointer bg-[#121212] border focus:outline-none uppercase tracking-wider ${getStatusColor(order.status)}`}
                     >
                       {["pending", "waiting_verification", "processing", "shipped", "success", "cancelled"].map((s) => (
                         <option key={s} value={s} className="bg-zinc-900 text-white capitalize text-sm">{s.replace("_", " ")}</option>
                       ))}
                     </select>
                   </td>
+
+                  {/* 7. Catatan / Notes */}
                   <td className="px-6 py-4 text-xs text-zinc-400 font-medium max-w-[150px] truncate" title={order.notes || "-"}>
                     {order.notes || "-"}
                   </td>
+
+                  {/* 8. Tombol Hapus */}
                   <td className="px-6 py-4">
-                    <button onClick={() => onDelete(order.id)} className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-red-400">
+                    <button onClick={() => onDelete(order.orderCode)} className="p-1.5 hover:bg-zinc-800 rounded transition-colors text-red-400" title="Hapus Data">
                       <Trash2 className="w-4 h-4" />
                     </button>
                   </td>
+
                 </tr>
               ))
             )}

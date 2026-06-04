@@ -2,7 +2,7 @@
 
 import { ProfileSidebar } from '../../components/layout/ProfileSidebar';
 import { useCart } from '../../context/CartContext';
-import { Package, Clock, Copy, AlertCircle, X, Check } from 'lucide-react';
+import { Package, Clock, Copy, AlertCircle, X, Check, Backpack } from 'lucide-react';
 import { format } from 'date-fns';
 import { id } from 'date-fns/locale';
 import Image from 'next/image';
@@ -18,12 +18,12 @@ export default function OrderHistory() {
   
   // State untuk kontrol Modal Cancel Order konsumen
   const [isCancelModalOpen, setIsCancelModalOpen] = useState(false);
-  const [selectedOrderIdToCancel, setSelectedOrderIdToCancel] = useState<string | null>(null);
+  const [selectedOrderCodeToCancel, setSelectedOrderCodeToCancel] = useState<string | null>(null);
   const [cancelReason, setCancelReason] = useState("");
 
-    useEffect(() => {
-      document.title = "Mahen Store - Pesanan Saya";
-    }, []);
+  useEffect(() => {
+    document.title = "Mahen Store - Pesanan Saya";
+  }, []);
 
   const orderStatuses = [
     { id: "all", label: "Semua" },
@@ -82,7 +82,36 @@ export default function OrderHistory() {
     try {
       const res = await clientFetch("/orders");
       if (res?.data) {
-        setDataOrders(res.data);
+        // ─── LOGIKA UTAMA: GROUPING BERDASARKAN ORDER CODE ───
+        const groupedMap: { [key: string]: any } = {};
+
+        res.data.forEach((order: any) => {
+          const code = order.orderCode;
+          
+          // Struktur data item produk tunggal
+          const currentItem = {
+            id: order.id,
+            product: order.product,
+            size: order.size,
+            qty: order.qty,
+          };
+
+          if (!groupedMap[code]) {
+            // Inisialisasi Invoice Group baru
+            groupedMap[code] = {
+              ...order,
+              totalAmount: parseFloat(order.totalAmount || "0"),
+              items: [currentItem] // Simpan list produk ke dalam array items
+            };
+          } else {
+            // Jika kode order sama, akumulasikan total belanjanya & kumpulkan item bajunya
+            groupedMap[code].totalAmount += parseFloat(order.totalAmount || "0");
+            groupedMap[code].items.push(currentItem);
+          }
+        });
+
+        // Kembalikan objek map ke bentuk Array rapi
+        setDataOrders(Object.values(groupedMap));
       }
     } catch (error) {
       console.log(error);
@@ -98,37 +127,37 @@ export default function OrderHistory() {
     toast.success("Kode order berhasil disalin!");
   };
 
-  // Handler eksekusi pembatalan dari sisi user konsumen
+  // Handler eksekusi pembatalan massal berdasarkan orderCode gabungan
   const handleCancelOrderSubmit = async () => {
-    if (!selectedOrderIdToCancel || !cancelReason.trim()) {
+    if (!selectedOrderCodeToCancel || !cancelReason.trim()) {
       toast.error("Alasan pembatalan wajib diisi!");
       return;
     }
 
     try {
-      await clientFetch(`/orders/${selectedOrderIdToCancel}/status`, {
+      // Mengirim orderCode ke backend agar semua baris item dengan kode ini auto-cancel barengan
+      await clientFetch(`/orders/${selectedOrderCodeToCancel}/status`, {
         method: "PATCH",
         body: JSON.stringify({
           status: "cancelled",
-          notes: `Dibatalkan oleh Konsumen. Alasan: ${cancelReason}` // Menyimpan alasan pembatalan konsumen ke field notes
+          notes: `Dibatalkan oleh Konsumen. Alasan: ${cancelReason}`
         }),
       });
 
       toast.success("Pesanan Anda berhasil dibatalkan!");
       setIsCancelModalOpen(false);
-      setSelectedOrderIdToCancel(null);
+      setSelectedOrderCodeToCancel(null);
       setCancelReason("");
-      fetchOrders(); // Refresh data tampilan terbaru
+      fetchOrders();
     } catch (error) {
       toast.error("Gagal membatalkan pesanan, silakan hubungi CS.");
     }
   };
-  // Filter data orders berdasarkan tab marketplace yang sedang aktif
+
+  // Filter data berdasarkan tab status yang sedang aktif
   const filteredOrders = currentTab === "all"
     ? dataOrders
     : dataOrders?.filter((order: any) => order.status === currentTab);
-
-    console.log(filteredOrders, 'a')
 
   return (
     <div className="container mx-auto px-4 py-8">
@@ -176,7 +205,7 @@ export default function OrderHistory() {
               <div className="space-y-4">
                 {filteredOrders?.map((order: any) => (
                   <div
-                    key={order.id}
+                    key={order.orderCode}
                     className="border border-zinc-800 rounded-xl p-5 hover:border-zinc-700 transition-colors bg-[#141414]"
                   >
                     {/* Header baris pesanan */}
@@ -207,42 +236,46 @@ export default function OrderHistory() {
                       </div>
                     </div>
 
-                    {/* Informasi Item Produk */}
-                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                      <div className="flex items-start gap-4">
-                        <Image
-                          src={`${BASE_IMAGE_URL}/${order.product?.image}`}
-                          alt={order.product?.name || "Produk"}
-                          width={400}
-                          height={400}
-                          unoptimized
-                          className="w-14 h-20 object-cover rounded-lg bg-zinc-900 border border-zinc-800"
-                        />
-                        <div className="space-y-1">
-                          <p className="text-white text-sm font-semibold tracking-wide">{order.product?.name}</p>
-                          <p className="text-zinc-500 text-xs font-medium">
-                            Ukuran Varian: <span className="text-zinc-300 uppercase">{order.size}</span>
-                          </p>
-                          <p className="text-zinc-500 text-xs font-medium">
-                            Jumlah Barang: <span className="text-zinc-300 font-bold font-mono">{order.qty || 1}x</span>
-                          </p>
-                        </div>
+                    {/* RENDER SEMUA ITEM PRODUK YANG DIBELI DI DALAM INVOICE GABUNGAN */}
+                    <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+                      <div className="space-y-4 flex-1 w-full">
+                        {order.items?.map((item: any) => (
+                          <div key={item.id} className="flex items-start gap-4 border-b border-zinc-900/40 pb-3 last:border-0 last:pb-0">
+                            <Image
+                              src={`${BASE_IMAGE_URL}/${item.product?.image}`}
+                              alt={item.product?.name || "Produk"}
+                              width={400}
+                              height={400}
+                              unoptimized
+                              className="w-12 h-16 object-cover rounded-lg bg-zinc-900 border border-zinc-800 shrink-0"
+                            />
+                            <div className="space-y-0.5 flex-1 min-w-0">
+                              <p className="text-white text-sm font-semibold tracking-wide truncate">{item.product?.name}</p>
+                              <p className="text-zinc-500 text-xs font-medium">
+                                Ukuran Varian: <span className="text-zinc-300 uppercase">{item.size || "-"}</span>
+                              </p>
+                              <p className="text-zinc-500 text-xs font-medium">
+                                Jumlah Barang: <span className="text-zinc-300 font-bold font-mono">{item.qty || 1}x</span>
+                              </p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
 
                       {/* Detail Finansial & Tombol Aksi Cancel */}
-                      <div className="w-full sm:w-auto flex flex-row sm:flex-col justify-between sm:justify-center items-center sm:items-end gap-3 border-t sm:border-t-0 border-zinc-800/40 pt-3 sm:pt-0">
+                      <div className="w-full sm:w-auto flex flex-row sm:flex-col justify-between sm:justify-center items-center sm:items-end gap-3 border-t sm:border-t-0 border-zinc-800/40 pt-4 sm:pt-0 shrink-0">
                         <div className="text-left sm:text-right">
-                          <p className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Total Belanja</p>
+                          <p className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-0.5">Total Bayar Gabungan</p>
                           <p className="text-blue-400 font-bold text-base font-mono">
-                            Rp {parseInt(order.totalAmount).toLocaleString('id-ID')}
+                            Rp {order.totalAmount.toLocaleString('id-ID')}
                           </p>
                         </div>
 
-                        {/* Opsi Pembatalan Mandiri oleh Konsumen (Hanya tampil jika status belum diproses admin) */}
+                        {/* Opsi Pembatalan Mandiri oleh Konsumen */}
                         {(order.status === 'pending' || order.status === 'waiting_verification') && (
                           <button
                             onClick={() => {
-                              setSelectedOrderIdToCancel(order.id);
+                              setSelectedOrderCodeToCancel(order.orderCode); // Set berdasarkan orderCode gabungan
                               setIsCancelModalOpen(true);
                             }}
                             className="px-3 py-1.5 bg-red-950/40 hover:bg-red-900/30 border border-red-900/60 rounded-lg text-red-400 text-xs font-bold transition-all"
@@ -253,8 +286,8 @@ export default function OrderHistory() {
                       </div>
                     </div>
 
-                    {/* Jika pesanan memiliki catatan pembatalan/alasan dari admin, tampilkan di bawahnya */}
-                    {order.status === 'cancelled' || order.notes.split('.')[0] === 'Pembayaran Ditolak Admin' && order.status !== "waiting_verification" && order.notes && (
+                    {/* Note Sistem Pembatalan */}
+                    {order.notes && (order.status === 'cancelled' || order.notes.split('.')[0] === 'Pembayaran Ditolak Admin') && order.status !== "waiting_verification" && (
                       <div className="mt-4 p-3 bg-red-950/20 border border-red-900/30 rounded-lg text-xs text-zinc-400 flex items-start gap-2">
                         <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
                         <span className="italic">Note Sistem: {order.notes}</span>
@@ -280,7 +313,7 @@ export default function OrderHistory() {
               <button
                 onClick={() => {
                   setIsCancelModalOpen(false);
-                  setSelectedOrderIdToCancel(null);
+                  setSelectedOrderCodeToCancel(null);
                   setCancelReason("");
                 }}
                 className="text-zinc-400 hover:text-white p-1 hover:bg-zinc-800 rounded-md"
@@ -315,12 +348,12 @@ export default function OrderHistory() {
                 <button
                   onClick={() => {
                     setIsCancelModalOpen(false);
-                    setSelectedOrderIdToCancel(null);
+                    setSelectedOrderCodeToCancel(null);
                     setCancelReason("");
                   }}
                   className="flex-1 bg-zinc-800 text-zinc-300 py-2 rounded-lg hover:bg-zinc-700 transition-colors font-semibold text-xs"
                 >
-                  Kembali
+                  <Backpack /> Kembali
                 </button>
               </div>
             </div>
