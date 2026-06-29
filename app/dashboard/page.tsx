@@ -489,11 +489,12 @@ const handleDeleteOrder = async (orderCode: string) => {
       toast.error("Alasan penolakan pembayaran wajib diisi!");
       return;
     }
+
     try {
       await clientFetch(`/payments/${selectedPaymentToReject.paymentId}/verify`, { method: "PATCH", body: JSON.stringify({ status: "rejected", notes: `Pembayaran Ditolak Admin. Alasan: ${rejectPaymentReason}` }) });
 
       if (selectedPaymentToReject.orderDetail?.orderId) {
-        await clientFetch(`/orders/${selectedPaymentToReject.orderDetail.orderId}/status`, {
+        await clientFetch(`/orders/${selectedPaymentToReject.orderCode}/status`, {
           method: "PATCH",
           body: JSON.stringify({
             status: "pending",
